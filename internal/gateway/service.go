@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,9 +40,18 @@ type Service struct {
 	events            []Event
 	health            Health
 	dns               *DNSProxy
+	dnsPortOverride   int
 }
 
 func NewService(store *Store, xray *Xray) (*Service, error) {
+	dnsPort := 0
+	if raw := os.Getenv("HAPPY_DNS_PORT"); raw != "" {
+		port, err := strconv.Atoi(raw)
+		if err != nil || port < 1 || port > 65535 {
+			return nil, errors.New("HAPPY_DNS_PORT должен быть числом от 1 до 65535")
+		}
+		dnsPort = port
+	}
 	state, err := store.load()
 	if err != nil {
 		return nil, err
@@ -76,6 +87,13 @@ func NewService(store *Store, xray *Xray) (*Service, error) {
 		state.Settings.DNS = defaultDNSSettings()
 		changed = true
 	}
+	if dnsPort != 0 && state.Settings.DNS.Port != dnsPort {
+		state.Settings.DNS.Port = dnsPort
+		changed = true
+	}
+	if state.Settings.DNS.Enabled && dnsPort != 0 && dnsPort == state.Settings.WireGuardPort {
+		return nil, errors.New("HAPPY_DNS_PORT совпадает с портом WireGuard")
+	}
 	if state.DeviceID == "" {
 		state.DeviceID = newDeviceID()
 		changed = true
@@ -100,7 +118,7 @@ func NewService(store *Store, xray *Xray) (*Service, error) {
 			return nil, err
 		}
 	}
-	return &Service{store: store, xray: xray, dns: newDNSProxy(xray.dnsDial, xray.dnsKey), state: state, events: []Event{}, fetcher: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	return &Service{store: store, xray: xray, dnsPortOverride: dnsPort, dns: newDNSProxy(xray.dnsDial, xray.dnsKey), state: state, events: []Event{}, fetcher: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("слишком много перенаправлений")
 		}
@@ -358,6 +376,9 @@ func (s *Service) Configure(ctx context.Context, v Settings) error {
 	if reflect.DeepEqual(v.DNS, DNSSettings{}) {
 		v.DNS = defaultDNSSettings()
 	}
+	if s.dnsPortOverride != 0 {
+		v.DNS.Port = s.dnsPortOverride
+	}
 	v.DNS.Listen = strings.TrimSpace(v.DNS.Listen)
 	clean := []string{}
 	for _, raw := range v.DNS.AllowedNetworks {
@@ -474,7 +495,7 @@ func (s *Service) View() map[string]any {
 		clients = append(clients, map[string]any{"id": c.ID, "name": c.Name, "enabled": c.Enabled, "publicKey": c.PublicKey, "address": fmt.Sprintf("10.77.0.%d", c.Address)})
 		enabled = enabled || c.Enabled
 	}
-	return map[string]any{"dns": s.dns.Status(), "deviceId": s.state.DeviceID, "settings": s.state.Settings, "subscriptions": subs, "selected": s.state.Selected, "clients": clients, "running": s.xray.Running(), "exitDisabled": s.state.ExitDisabled, "blocked": s.state.ExitDisabled || s.state.activeNode() == nil || !s.xray.Running() || !enabled, "health": s.health, "events": append([]Event{}, s.events...)}
+	return map[string]any{"managedDnsPort": s.dnsPortOverride, "dns": s.dns.Status(), "deviceId": s.state.DeviceID, "settings": s.state.Settings, "subscriptions": subs, "selected": s.state.Selected, "clients": clients, "running": s.xray.Running(), "exitDisabled": s.state.ExitDisabled, "blocked": s.state.ExitDisabled || s.state.activeNode() == nil || !s.xray.Running() || !enabled, "health": s.health, "events": append([]Event{}, s.events...)}
 }
 func (s *Service) ClientConfig(ids ...string) (string, error) {
 	s.mu.Lock()

@@ -1,0 +1,68 @@
+{
+  "date": "2026-11-11",
+  "browser": "isolated headless Google Chrome through Playwright",
+  "api": "fixture responses, not a production provider connection",
+  "layoutChecks": {
+    "desktopAndResponsive": 32,
+    "touch": 16,
+    "widths": [
+      320,
+      375,
+      414,
+      768,
+      1280,
+      1440,
+      1920
+    ],
+    "horizontalOverflow": 0,
+    "undersizedTargets": 0,
+    "javascriptErrors": 0
+  },
+  "accessibility": {
+    "tool": "axe-core",
+    "tags": [
+      "wcag2a",
+      "wcag2aa",
+      "wcag21aa",
+      "wcag22aa"
+    ],
+    "violations": 0,
+    "keyboardFocus": {
+      "width": "3px",
+      "style": "solid",
+      "color": "oklch(0.59 0.18 263)"
+    },
+    "reducedMotion": true,
+    "contrastRatios": {
+      "mutedOnPanel": 7.392774817293827,
+      "inkOnAccent": 13.906209489661808,
+      "focusOnPanel": 4.311710040819309,
+      "focusOnAccent": 3.0872455772237712,
+      "controlBorderOnInput": 3.8747398764567635
+    }
+  },
+  "interactions": [
+    "admin login",
+    "tab navigation",
+    "DNS fallback and subnet settings",
+    "settings API payload",
+    "disconnect and reconnect"
+  ],
+  "build": [
+    "TypeScript and Vite passed",
+    "go test -mod=vendor ./... passed",
+    "go vet -mod=vendor ./... passed"
+  ],
+  "limits": [
+    "Automated accessibility checks do not replace assistive-technology testing.",
+    "NixOS and Docker image builds were not executed locally."
+  ],
+  "selfCritique": {
+    "philosophy": 5,
+    "hierarchy": 5,
+    "execution": 4,
+    "specificity": 5,
+    "restraint": 4,
+    "variety": 4
+  }
+}

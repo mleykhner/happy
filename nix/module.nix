@@ -10,6 +10,7 @@ in {
     passwordFile = mkOption { type = types.str; description = "Absolute runtime path to an admin password, outside the Nix store"; };
     domain = mkOption { type = types.nullOr types.str; default = null; description = "Optional nginx HTTPS domain"; };
     openFirewall = mkOption { type = types.bool; default = false; };
+    dnsPort = mkOption { type = types.nullOr types.port; default = null; description = "DNS listener port managed by NixOS; null leaves port configuration to the panel"; };
     dnsPorts = mkOption { type = types.listOf types.port; default = []; description = "DNS firewall ports (UDP and TCP); match the port set in the panel"; };
     wireGuardPort = mkOption { type = types.port; default = 51820; description = "Firewall port; match the port set in the panel"; };
   };
@@ -27,6 +28,8 @@ in {
         HAPPY_DATA_DIR = "/var/lib/happy";
         HAPPY_LISTEN = cfg.listen;
         HAPPY_PASSWORD_FILE = "%d/admin-password";
+      } // lib.optionalAttrs (cfg.dnsPort != null) {
+        HAPPY_DNS_PORT = toString cfg.dnsPort;
       } // lib.optionalAttrs (cfg.domain != null) {
         HAPPY_ORIGIN = "https://${cfg.domain}";
         HAPPY_SECURE_COOKIE = "true";
@@ -53,8 +56,8 @@ in {
         AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
       };
     };
-    networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall ([ cfg.wireGuardPort ] ++ cfg.dnsPorts);
-    networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall cfg.dnsPorts;
+    networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall ([ cfg.wireGuardPort ] ++ cfg.dnsPorts ++ lib.optional (cfg.dnsPort != null) cfg.dnsPort);
+    networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall (cfg.dnsPorts ++ lib.optional (cfg.dnsPort != null) cfg.dnsPort);
     services.nginx = mkIf (cfg.domain != null) {
       enable = true;
       virtualHosts.${cfg.domain} = {

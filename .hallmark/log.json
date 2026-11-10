@@ -1,0 +1,13 @@
+[
+  {
+    "date": "2026-11-11",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "Happy Terminal",
+    "theme_axes": "dark / mono / chromatic-green",
+    "enrichment": "none; ASCII illustrates live route state",
+    "nav": "N3 adapted labelled application rail",
+    "footer": "Ft2 status line",
+    "brief": "Happy gateway: connection first, server selection, mobile controls"
+  }
+]

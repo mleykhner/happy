@@ -35,13 +35,14 @@ function TrafficMonitor() {
   const peak = Math.max(1024, ...history.flatMap(t => [t.downloadRate, t.uploadRate]));
   const points = (key: "downloadRate" | "uploadRate") => history.map((t, i) => `${i * 600 / 59},${100 - (t[key] || 0) / peak * 95}`).join(" ");
   return <section className="card traffic-monitor">
-    <div className="section-title"><h2>Трафик в реальном времени</h2><span className="muted">WireGuard · обновление 1 с</span></div>
+    <div className="section-title"><h2>Трафик</h2><span className="muted">WireGuard · обновление 1 с</span></div>
     {traffic?.available ? <>
       <div className="traffic-values">
-        <div><span className="muted">↓ Загрузка</span><h3>{bytes(traffic.downloadRate)}/с</h3><span>Всего {bytes(traffic.download)}</span></div>
-        <div><span className="muted">↑ Отправка</span><h3>{bytes(traffic.uploadRate)}/с</h3><span>Всего {bytes(traffic.upload)}</span></div>
+        <div><span className="traffic-legend download">↓ Загрузка</span><h3>{bytes(traffic.downloadRate)}/с</h3><span>Всего {bytes(traffic.download)}</span></div>
+        <div><span className="traffic-legend upload">↑ Отправка</span><h3>{bytes(traffic.uploadRate)}/с</h3><span>Всего {bytes(traffic.upload)}</span></div>
       </div>
-      <svg viewBox="0 0 600 105" role="img" aria-label="История скорости: загрузка зелёным, отправка синим">
+      <svg viewBox="0 0 600 105" role="img" aria-label="История скорости за последние 60 измерений: загрузка лаймовым, отправка голубым">
+        <path className="chart-grid" d="M0 25H600M0 50H600M0 75H600M0 100H600" />
         <polyline className="traffic-download" points={points("downloadRate")} />
         <polyline className="traffic-upload" points={points("uploadRate")} />
       </svg>
@@ -82,6 +83,7 @@ type Health = {
   error: string;
 };
 type State = {
+ managedDnsPort: number;
  dns: DNSStatus;
   deviceId: string;
   settings: Settings;
@@ -219,6 +221,14 @@ function ProviderInfo({ subscription }: { subscription: Subscription }) {
     </div>
   );
 }
+function RouteSignal({ enabled, busy }: { enabled: boolean; busy: boolean }) {
+  return <div className={`route-signal ${enabled ? "is-online" : ""} ${busy ? "is-busy" : ""}`} aria-hidden="true">
+    <pre className="ascii-friend">{` .-------.
+ | ${busy ? "- . -" : enabled ? "^ _ ^" : "- _ -"} |
+ '---+---'`}</pre>
+    <div className="ascii-route"><span>wireguard</span><span className="signal-wire">{enabled ? "---->" : "--x--"}<b>{">"}</b></span><span>[happy]</span><span className="signal-wire">{enabled ? "---->" : "--x--"}<b>{">"}</b></span><span>xray</span></div>
+  </div>;
+}
 function App() {
   const [state, setState] = useState<State | null>(null);
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -294,7 +304,7 @@ function App() {
   const tabs = [
     ["overview", "Обзор"],
     ["subscriptions", "Подписки"],
-    ["client", "Подключение"],
+    ["client", "Клиенты"],
     ["settings", "Настройки"],
   ];
   if (authed === null)
@@ -319,8 +329,8 @@ function App() {
           h<span>appy</span>
           <i />
         </div>
-        <p className="eyebrow">ВАШ ЛИЧНЫЙ VPN-ШЛЮЗ</p>
-        <h1>С возвращением.</h1>
+        <p className="eyebrow">Личный сетевой шлюз</p>
+        <pre className="login-ascii" aria-hidden="true">{"[ wireguard ] --- [ happy ] ---> [ xray ]"}</pre><h1>Доступ к шлюзу.</h1>
         <p className="muted">Войдите, чтобы управлять подключением.</p>
         <form
           onSubmit={(e) => {
@@ -352,28 +362,30 @@ function App() {
               {error}
             </div>
           )}
-          <Button disabled={busy} type="submit">
+          <Button loading={busy} type="submit">
             {busy ? "Входим…" : "Войти в панель →"}
           </Button>
         </form>
-        <small>Один сервер. Одно подключение. Ваш контроль.</small>
+        <small>Один шлюз. Ваш маршрут.</small>
       </main>
     );
   if (!state) return null;
   return (
-    <div className="shell">
+    <div className="shell" data-busy={busy}>
+      <a className="skip-link" href="#main-content">К содержимому</a>
       <aside>
         <a className="wordmark" href="/">
           h<span>appy</span>
           <i />
         </a>
-        <p className="eyebrow">ЛИЧНЫЙ ШЛЮЗ</p>
-        <nav>
-          {tabs.map(([id, label], i) => (
+        <p className="sidebar-caption">Личный сетевой шлюз</p>
+        <nav aria-label="Разделы панели">
+          {tabs.map(([id, label]) => (
             <button
               key={id}
               onClick={() => {
                 setTab(id);
+                window.scrollTo({ top: 0, behavior: "instant" });
                 setQR("");
                 setNotice("");
                 setError("");
@@ -382,20 +394,17 @@ function App() {
                 setConfirmPassword("");
                 if (id === "settings") setSettings({ ...state.settings });
               }}
+              aria-current={tab === id ? "page" : undefined}
               className={tab === id ? "active" : ""}
             >
-              <span className="nav-number">0{i + 1}</span>
+              <span className="nav-glyph" aria-hidden="true">{{ overview: ">_", subscriptions: "[+]", client: "<->", settings: "[*]" }[id]}</span>
               {label}
             </button>
           ))}
         </nav>
         <div className="aside-bottom">
-          <span className="pill">XRAY CORE</span>
-          <p>
-            Приватный маршрут
-            <br />
-            под вашим управлением.
-          </p>
+          <div className="sidebar-runtime"><span className={`runtime-dot ${state.running ? "is-online" : ""}`} />Xray {state.running ? "запущен" : "остановлен"}</div>
+          <p>wireguard → happy → xray</p>
           <Button
             variant="outline"
             disabled={busy}
@@ -415,15 +424,15 @@ function App() {
           </Button>
         </div>
       </aside>
-      <main className="content">
+      <main className="content" id="main-content">
         <header>
           <div>
-            <p className="eyebrow">ПАНЕЛЬ УПРАВЛЕНИЯ</p>
+            <p className="page-kicker">happy / {tab}</p>
             <h1>{tabs.find((t) => t[0] === tab)?.[1]}</h1>
           </div>
-          <span className={`status ${state.running ? "good" : ""}`}>
+          <span className={`status ${!state.exitDisabled && selected && state.running ? "good" : ""}`}>
             <i />
-            {state.running ? "Xray запущен" : "Xray остановлен"}
+            {!state.running ? "Ядро остановлено" : state.exitDisabled || !selected ? "Выход отключён" : "Выход включён"}
           </span>
         </header>
         {error && (
@@ -438,10 +447,14 @@ function App() {
         )}
         {tab === "overview" && (
           <>
-            <TrafficMonitor />
+            <div className="overview-primary">
             <section className="card connection-card">
-              <p className="eyebrow">WIREGUARD → XRAY</p>
+              <div className="connection-heading"><span className="panel-label">Подключение</span><span className="protocol-tag">WireGuard / Xray</span></div>
+              <RouteSignal key={`${state.selected}-${state.exitDisabled}-${busy}`} enabled={!state.exitDisabled && !!selected && state.running} busy={busy} />
+              <h2 className="connection-state">{busy ? "Применяем…" : !state.running ? "Ядро остановлено" : !selected ? "Выберите сервер" : state.exitDisabled ? "Выход отключён" : "Выход включён"}</h2>
+              <p className="connection-caption">{!selected ? "Начните с выбора сервера из подписки." : state.exitDisabled || !state.running ? "Подключите выход для передачи трафика." : "Трафик идёт через выбранный сервер."}</p>
               <button
+                aria-busy={busy}
                 className={`connection-toggle ${!state.exitDisabled && selected && state.running ? "connected" : ""}`}
                 disabled={busy || !selected}
                 aria-pressed={
@@ -453,9 +466,7 @@ function App() {
                       api("/connection", "POST", {
                         enabled: state.exitDisabled || !state.running,
                       }),
-                    state.exitDisabled || !state.running
-                      ? "Выход включён"
-                      : "Выход отключён",
+                    "",
                   )
                 }
               >
@@ -471,28 +482,21 @@ function App() {
                         ? "Отключить"
                         : "Подключить"}
                 </strong>
-                <span>
-                  {state.exitDisabled
-                    ? "Отключено"
-                    : !selected
-                      ? "Выберите сервер"
-                      : !state.running
-                        ? "Xray остановлен"
-                        : "Выход включён"}
-                </span>
+
               </button>
-              <h2>{selected?.name || "Сервер не выбран"}</h2>
+              <div className="selected-server"><span className="panel-label">Сервер выхода</span><h3>{selected?.name || "Не выбран"}</h3>
               <p className="muted">
                 {selected
                   ? `${selected.subscription} · ${selected.protocol.toUpperCase()} · ${selected.host}:${selected.port}`
                   : "Добавьте подписку и выберите сервер в списке ниже."}
               </p>
-              <p className="muted">
+              </div>
+              <p className="muted connection-help">
                 {state.blocked
                   ? "Клиентский трафик заблокирован."
-                  : "Маршрут для WireGuard-клиента настроен."}{" "}
+                  : "WireGuard → выбранный сервер."}{" "}
                 {!state.clients.length
-                  ? "Создайте WireGuard-клиент в разделе «Подключение»."
+                  ? "Создайте WireGuard-клиент в разделе «Клиенты»."
                   : !state.clients.some(c => c.enabled)
                     ? "Все WireGuard-клиенты отключены."
                     : ""}
@@ -506,9 +510,73 @@ function App() {
                   action(() => api("/probe", "POST"), "Проверка завершена")
                 }
               >
-                Проверить доступность
+                Проверить выход
               </Button>
             </section>
+            <section className="card server-panel">
+              <div className="section-title">
+                <h2>
+                  Серверы выхода <span className="count">{nodes.length}</span>
+                </h2>
+                <Button variant="outline" loading={pinging} disabled={nodes.length === 0} onClick={async () => {
+                  setPinging(true);
+                  try { const results = await api<NodePing[]>("/ping", "POST"); setPings(Object.fromEntries(results.filter(p => p.id).map(p => [p.id, p]))); }
+                  catch (e) { report(e); }
+                  finally { setPinging(false); }
+                }}>{pinging ? "Проверяем…" : "Пинг всех"}</Button>
+              </div>
+              <input
+                aria-label="Поиск узлов"
+                type="search"
+                placeholder="Название или провайдер"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              <div className="nodes" role="list" aria-label="Серверы подписок">
+                {nodes
+                  .filter((n) =>
+                    `${n.name} ${n.subscription}`
+                      .toLowerCase()
+                      .includes(query.toLowerCase()),
+                  )
+                  .map((n) => (
+                    <div
+                      role="listitem"
+                      className={`node ${n.id === state.selected ? "selected" : ""}`}
+                      key={`${n.subscription}-${n.id}`}
+                    >
+                      <div>
+                        <h3>{n.name}</h3>
+                        <p>
+                          {n.subscription} · {n.protocol.toUpperCase()} ·{" "}
+                          {n.host}:{n.port}
+                        </p>
+                        <p className={`node-ping ${pings[n.id]?.ok ? "is-online" : ""}`} title={pings[n.id] ? date(pings[n.id].checked) : "Проверка доступности TCP-порта со шлюза"}>
+                          TCP · {pinging ? "проверяем…" : !pings[n.id] ? "не проверен" : pings[n.id].ok ? `${pings[n.id].latencyMs} мс` : "недоступен"}
+                        </p>
+                      </div>
+                      <Button
+                        variant={
+                          n.id === state.selected ? "default" : "outline"
+                        }
+                        disabled={busy || n.id === state.selected}
+                        onClick={() =>
+                          action(
+                            () => api("/select", "POST", { id: n.id }),
+                            "",
+                          )
+                        }
+                      >
+                        {n.id === state.selected ? "Выбран ✓" : "Выбрать"}
+                      </Button>
+                    </div>
+                  ))}
+                {nodes.length === 0 && <div className="empty"><span className="empty-glyph" aria-hidden="true">[ _ ]</span><p>Пока нет серверов.</p><p className="muted">Добавьте и обновите подписку.</p><Button variant="outline" onClick={() => setTab("subscriptions")}>Добавить подписку</Button></div>}
+                {nodes.length > 0 && !nodes.some(n => `${n.name} ${n.subscription}`.toLowerCase().includes(query.toLowerCase())) && <div className="empty"><p>Серверы не найдены.</p><Button variant="outline" onClick={() => setQuery("")}>Сбросить поиск</Button></div>}
+              </div>
+            </section>
+            </div>
+            <TrafficMonitor />
             {selectedSubscription && (
               <section className="card">
                 <h2>Подписка · {selectedSubscription.name}</h2>
@@ -521,69 +589,6 @@ function App() {
                 )}
               </section>
             )}
-            <section className="card">
-              <div className="section-title">
-                <h2>
-                  Все серверы <span className="count">{nodes.length}</span>
-                </h2>
-                <Button variant="outline" disabled={pinging || nodes.length === 0} onClick={async () => {
-                  setPinging(true);
-                  try { const results = await api<NodePing[]>("/ping", "POST"); setPings(Object.fromEntries(results.filter(p => p.id).map(p => [p.id, p]))); }
-                  catch (e) { report(e); }
-                  finally { setPinging(false); }
-                }}>{pinging ? "Проверяем…" : "Проверить пинг всех"}</Button>
-              </div>
-              <input
-                aria-label="Поиск узлов"
-                placeholder="Поиск по названию или провайдеру…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              <div className="nodes">
-                {nodes
-                  .filter((n) =>
-                    `${n.name} ${n.subscription}`
-                      .toLowerCase()
-                      .includes(query.toLowerCase()),
-                  )
-                  .map((n) => (
-                    <div
-                      className={`node ${n.id === state.selected ? "selected" : ""}`}
-                      key={`${n.subscription}-${n.id}`}
-                    >
-                      <div>
-                        <h3>{n.name}</h3>
-                        <p>
-                          {n.subscription} · {n.protocol.toUpperCase()} ·{" "}
-                          {n.host}:{n.port}
-                        </p>
-                        <p className="muted" title={pings[n.id] ? date(pings[n.id].checked) : "Проверка доступности TCP-порта со шлюза"}>
-                          TCP-пинг: {pinging ? "проверяем…" : !pings[n.id] ? "не проверен" : pings[n.id].ok ? `${pings[n.id].latencyMs} мс` : "недоступен"}
-                        </p>
-                      </div>
-                      <Button
-                        variant={
-                          n.id === state.selected ? "default" : "outline"
-                        }
-                        disabled={busy || n.id === state.selected}
-                        onClick={() =>
-                          action(
-                            () => api("/select", "POST", { id: n.id }),
-                            "Единый выход изменён",
-                          )
-                        }
-                      >
-                        {n.id === state.selected ? "Выбран ✓" : "Выбрать"}
-                      </Button>
-                    </div>
-                  ))}
-                {nodes.length === 0 && (
-                  <p className="empty">
-                    Здесь появятся узлы после обновления подписки.
-                  </p>
-                )}
-              </div>
-            </section>
             <div className="stats">
               <article className="card">
                 <p className="eyebrow">ЕДИНЫЙ ВЫХОД</p>
@@ -618,7 +623,7 @@ function App() {
                 </p>
               </article>
             </div>
-            <section className="card">
+            <section className="card events-panel">
               <div className="section-title">
                 <h2>События</h2>
                 <span className="muted">Текущий запуск</span>
@@ -679,7 +684,7 @@ function App() {
                     onChange={(e) => setURL(e.target.value)}
                   />
                 </label>
-                <Button type="submit" disabled={busy}>
+                <Button type="submit" loading={busy}>
                   Добавить +
                 </Button>
               </form>
@@ -744,7 +749,7 @@ function App() {
                 action(async () => { await api("/clients", "POST", {name: clientName}); setClientName(""); }, "Подключение создано");
               }}>
                 <label>Имя устройства<input value={clientName} onChange={e => setClientName(e.target.value)} maxLength={120} placeholder="Например, телефон" /></label>
-                <Button disabled={busy || state.clients.length >= 253} type="submit">Создать подключение +</Button>
+                <Button disabled={busy || state.clients.length >= 253} type="submit">Создать клиента</Button>
               </form>
               {!state.settings.endpoint && <div className="alert">Укажите внешний адрес сервера в настройках перед скачиванием конфигурации.</div>}
             </section>
@@ -757,7 +762,7 @@ function App() {
                   <dt>Публичный ключ</dt><dd className="key">{client.publicKey}</dd>
                 </dl>
                 <div className="actions">
-                  {state.settings.endpoint && <Button asChild variant="outline"><a href={`/api/clients/${client.id}/config`} download="happy.conf">Скачать конфиг ↓</a></Button>}
+                  {state.settings.endpoint && <Button asChild variant="outline"><a href={`/api/clients/${client.id}/config`} download="happy.conf">Скачать конфиг</a></Button>}
                   <Button variant="outline" disabled={!state.settings.endpoint} onClick={() => setQR(qr === client.id ? "" : client.id)}>{qr === client.id ? "Скрыть QR" : "Показать QR"}</Button>
                   <Button disabled={busy} variant="outline" onClick={() => action(() => api(`/clients/${client.id}/${client.enabled ? "disable" : "enable"}`, "POST"))}>{client.enabled ? "Отключить" : "Включить"}</Button>
                   <Button disabled={busy} variant="outline" onClick={() => {
@@ -765,7 +770,7 @@ function App() {
                       setQR("");
                       action(() => api(`/clients/${client.id}/rotate`, "POST"), "Ключи перевыпущены. Импортируйте новый конфиг.");
                     }
-                  }}>Перевыпустить ключи</Button>
+                  }}>Новые ключи</Button>
                   <Button disabled={busy} variant="danger" onClick={() => {
                     if (confirm(`Удалить подключение «${client.name}»? Его конфиг перестанет работать.`)) {
                       setQR("");
@@ -774,14 +779,14 @@ function App() {
                   }}>Удалить</Button>
                 </div>
                 {qr === client.id && <div className="qr"><img src={`/api/clients/${client.id}/qr`} width="320" height="320" alt="QR-код конфигурации WireGuard" /><p className="muted">QR содержит приватный ключ. Не передавайте его посторонним.</p></div>}
-                <p className="footnote">Весь трафик → выбранный узел. DNS → через прокси. IPv6 → блокируется на шлюзе.</p>
+                <p className="footnote">Трафик → выбранный выход · IPv6 блокируется шлюзом</p>
               </section>
             ))}
           </div>
         )}
         {tab === "settings" && settings && (
           <>
-            <section className="card">
+            <section className="card gateway-settings">
               <h2>Настройки шлюза</h2>
               <label>
                 HWID шлюза
@@ -798,6 +803,7 @@ function App() {
                   action(() => api("/settings", "PUT", settings));
                 }}
               >
+                <fieldset className="settings-group"><legend>Сеть и подписки</legend>
                 <label>
                   Внешний IP или домен сервера
                   <input
@@ -847,10 +853,9 @@ function App() {
                     }
                   />
                 </label>
-                <DNSSettingsForm value={settings.dns} onChange={dns => setSettings({ ...settings, dns })} status={state.dns} check={(upstream, direct) => api<{ latencyMs: number }>("/dns/check", "POST", { upstream, direct })} />
-                <Button type="submit" disabled={busy}>
-                  Сохранить настройки
-                </Button>
+                </fieldset>
+                <DNSSettingsForm managedPort={state.managedDnsPort} value={settings.dns} onChange={dns => setSettings({ ...settings, dns })} status={state.dns} check={(upstream, direct) => api<{ latencyMs: number }>("/dns/check", "POST", { upstream, direct })} />
+                <div className="settings-save"><Button type="submit" loading={busy}>Сохранить настройки</Button><small>Применяется ко всему шлюзу</small></div>
               </form>
             </section>
             <section className="card">
@@ -913,7 +918,7 @@ function App() {
                     onChange={(e) => setConfirmPassword(e.target.value)}
                   />
                 </label>
-                <Button type="submit" disabled={busy}>
+                <Button type="submit" loading={busy}>
                   Сменить пароль
                 </Button>
               </form>
@@ -921,8 +926,8 @@ function App() {
           </>
         )}
         <footer>
-          <span>happy / 0.1</span>
-          <span>Без прямого выхода. Под вашим контролем.</span>
+          <span>happy <span aria-hidden="true">[_]</span> / 0.1</span>
+          <span>WireGuard → Xray · единый выход</span>
         </footer>
       </main>
     </div>

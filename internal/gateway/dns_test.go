@@ -414,3 +414,126 @@ func TestDNSDoTTrusted(t *testing.T) {
 		t.Fatal("wrong DoT name accepted")
 	}
 }
+
+func TestDNSWildcardSettingsUpdateKeepsListener(t *testing.T) {
+	p := newDNSProxy(hostDNSDial, func() string { return "" })
+	defer p.Close()
+	settings := defaultDNSSettings()
+	settings.Enabled = true
+	settings.Listen = "0.0.0.0"
+	settings.Port = freeDNSPort(t)
+	if err := p.Apply(settings); err != nil {
+		t.Fatal(err)
+	}
+	listener := p.external
+	settings.CacheSize++
+	if err := p.Apply(settings); err != nil {
+		t.Fatalf("saving DNS settings on the existing wildcard port: %v", err)
+	}
+	if p.external != listener {
+		t.Fatal("upstream/cache update replaced listener")
+	}
+}
+func TestDNSRebindSamePort(t *testing.T) {
+	p := newDNSProxy(hostDNSDial, func() string { return "" })
+	defer p.Close()
+	settings := defaultDNSSettings()
+	settings.Enabled = true
+	settings.Listen = "127.0.0.1"
+	settings.Port = freeDNSPort(t)
+	if err := p.Apply(settings); err != nil {
+		t.Fatal(err)
+	}
+	settings.Listen = "0.0.0.0"
+	if err := p.Apply(settings); err != nil {
+		t.Fatalf("changing bind address on the same port: %v", err)
+	}
+	settings.Listen = "127.0.0.1"
+	if err := p.Apply(settings); err != nil {
+		t.Fatal(err)
+	}
+	if a := dnsQuery(t, net.JoinHostPort(settings.Listen, strconv.Itoa(settings.Port)), "tcp"); a.Rcode != dns.RcodeServerFailure {
+		t.Fatal("listener stopped answering")
+	}
+}
+
+func TestDNSPortEnvironmentOverridesSavedAndUISettings(t *testing.T) {
+	port := freeDNSPort(t)
+	t.Setenv("HAPPY_DNS_PORT", strconv.Itoa(port))
+	s, _ := fixture(t)
+	if s.state.Settings.DNS.Port != port {
+		t.Fatalf("service ignores configured DNS port: got %d, want %d", s.state.Settings.DNS.Port, port)
+	}
+	settings := s.state.Settings
+	settings.DNS.Port = port + 1
+	settings.DNS.Enabled = true
+	settings.DNS.Listen = "127.0.0.1"
+	if err := s.Configure(t.Context(), settings); err != nil {
+		t.Fatal(err)
+	}
+	if s.state.Settings.DNS.Port != port {
+		t.Fatal("UI overwrote managed DNS port")
+	}
+	if a := dnsQuery(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), "tcp"); a.Rcode != dns.RcodeServerFailure {
+		t.Fatal("service did not listen on configured port")
+	}
+	saved, err := s.store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Settings.DNS.Port != port {
+		t.Fatal("managed DNS port was not persisted")
+	}
+	if s.View()["managedDnsPort"] != port {
+		t.Fatal("UI was not told that the port is managed")
+	}
+	newPort := freeDNSPort(t)
+	t.Setenv("HAPPY_DNS_PORT", strconv.Itoa(newPort))
+	reloaded, err := NewService(s.store, s.xray)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Close()
+	if reloaded.state.Settings.DNS.Port != newPort {
+		t.Fatal("saved port took precedence over updated service configuration")
+	}
+}
+
+func TestDNSPortConflictKeepsOldListener(t *testing.T) {
+	p := newDNSProxy(hostDNSDial, func() string { return "" })
+	defer p.Close()
+	settings := defaultDNSSettings()
+	settings.Enabled = true
+	settings.Listen = "127.0.0.1"
+	settings.Port = freeDNSPort(t)
+	if err := p.Apply(settings); err != nil {
+		t.Fatal(err)
+	}
+	listener := p.external
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	changed := settings
+	changed.Port = occupied.Addr().(*net.TCPAddr).Port
+	if err = p.Apply(changed); err == nil {
+		t.Fatal("another process's port was accepted")
+	}
+	if p.external != listener {
+		t.Fatal("existing listener lost after failed update")
+	}
+	if a := dnsQuery(t, net.JoinHostPort(settings.Listen, strconv.Itoa(settings.Port)), "udp"); a.Rcode != dns.RcodeServerFailure {
+		t.Fatal("previous DNS stopped serving")
+	}
+}
+func TestDNSInvalidPortEnvironment(t *testing.T) {
+	s, _ := fixture(t)
+	for _, raw := range []string{"0", "65536", "not-a-port"} {
+		t.Setenv("HAPPY_DNS_PORT", raw)
+		if v, err := NewService(s.store, s.xray); err == nil {
+			v.Close()
+			t.Fatalf("invalid port accepted: %s", raw)
+		}
+	}
+}

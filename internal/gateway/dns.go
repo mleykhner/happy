@@ -43,6 +43,7 @@ type dnsListeners struct {
 	udp     *dns.Server
 	tcp     *dns.Server
 	address string
+	bind    string
 }
 
 func (l *dnsListeners) close() {
@@ -96,7 +97,7 @@ func (p *DNSProxy) listen(address string) (*dnsListeners, error) {
 		tcp.Close()
 		return nil, fmt.Errorf("DNS UDP: %w", err)
 	}
-	l := &dnsListeners{address: tcp.Addr().String(), tcp: &dns.Server{Listener: tcp, Handler: p, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, MaxTCPQueries: 100}, udp: &dns.Server{PacketConn: udp, Handler: p, UDPSize: 4096}}
+	l := &dnsListeners{bind: address, address: tcp.Addr().String(), tcp: &dns.Server{Listener: tcp, Handler: p, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, MaxTCPQueries: 100}, udp: &dns.Server{PacketConn: udp, Handler: p, UDPSize: 4096}}
 	// ActivateAndServe reports readiness before returning; sockets are already bound.
 	readyTCP, readyUDP := make(chan struct{}), make(chan struct{})
 	l.tcp.NotifyStartedFunc = func() { close(readyTCP) }
@@ -116,7 +117,7 @@ func (p *DNSProxy) Apply(settings DNSSettings) (err error) {
 			p.lastError = err.Error()
 		}
 	}()
-	if old := p.current.Load(); old != nil && reflect.DeepEqual(old.settings, settings) {
+	if old := p.current.Load(); old != nil && reflect.DeepEqual(old.settings, settings) && (!settings.Enabled || p.external != nil) {
 		return nil
 	}
 	if settings.Enabled {
@@ -128,12 +129,27 @@ func (p *DNSProxy) Apply(settings DNSSettings) (err error) {
 			p.internal = l
 		}
 		address := net.JoinHostPort(settings.Listen, fmt.Sprint(settings.Port))
-		if p.external == nil || p.external.address != address {
+		if p.external == nil || p.external.bind != address {
+			old := p.external
+			overlap := old != nil && dnsBindOverlap(old.bind, address)
+			if overlap {
+				old.close()
+				p.external = nil
+			}
 			l, err := p.listen(address)
 			if err != nil {
+				if overlap {
+					restored, restoreErr := p.listen(old.bind)
+					p.external = restored
+					if restoreErr != nil {
+						err = errors.Join(err, fmt.Errorf("не удалось восстановить прежний DNS: %w", restoreErr))
+					}
+				}
 				return err
 			}
-			p.external.close()
+			if !overlap {
+				old.close()
+			}
 			p.external = l
 		}
 	} else {
@@ -478,4 +494,20 @@ func (s DNSSettings) wireGuardLine() string {
 		return ""
 	}
 	return "DNS = " + value + "\n"
+}
+
+// Rebinding an overlapping address requires releasing our own sockets first.
+// Distinct ports or non-overlapping interfaces can be prepared before switching.
+func dnsBindOverlap(a, b string) bool {
+	ah, ap, ae := net.SplitHostPort(a)
+	bh, bp, be := net.SplitHostPort(b)
+	if ae != nil || be != nil || ap != bp {
+		return false
+	}
+	ai, bi := net.ParseIP(ah), net.ParseIP(bh)
+	if ai == nil || bi == nil {
+		return false
+	}
+	// A wildcard listener may be dual-stack on the current host.
+	return ai.Equal(bi) || ai.IsUnspecified() || bi.IsUnspecified()
 }

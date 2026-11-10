@@ -3,6 +3,7 @@ WORKDIR /src/web
 COPY web/package*.json ./
 RUN npm ci --ignore-scripts
 COPY web/ ./
+COPY tokens.css /src/tokens.css
 RUN npm run build
 
 FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
