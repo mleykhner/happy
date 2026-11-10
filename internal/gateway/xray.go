@@ -59,8 +59,14 @@ func buildConfig(s State, probePort int, probeSecret string, metricsPort int) ([
 		target = "proxy"
 	}
 	inbounds := []any{map[string]any{"tag": "health", "listen": "127.0.0.1", "port": probePort, "protocol": "http", "settings": map[string]any{"accounts": []any{map[string]any{"user": "happy", "pass": probeSecret}}}}}
-	if s.Client != nil && s.Client.Enabled {
-		inbounds = append(inbounds, map[string]any{"tag": "wireguard", "listen": "0.0.0.0", "port": s.Settings.WireGuardPort, "protocol": "wireguard", "settings": map[string]any{"secretKey": s.ServerPrivate, "mtu": 1280, "peers": []any{map[string]any{"publicKey": s.Client.PublicKey, "allowedIPs": []string{"10.77.0.2/32", "fd77::2/128"}}}}})
+	peers := []any{}
+	for _, c := range s.clients() {
+		if c.Enabled {
+			peers = append(peers, map[string]any{"publicKey": c.PublicKey, "allowedIPs": []string{fmt.Sprintf("10.77.0.%d/32", c.Address), fmt.Sprintf("fd77::%x/128", c.Address)}})
+		}
+	}
+	if len(peers) > 0 {
+		inbounds = append(inbounds, map[string]any{"tag": "wireguard", "listen": "0.0.0.0", "port": s.Settings.WireGuardPort, "protocol": "wireguard", "settings": map[string]any{"secretKey": s.ServerPrivate, "mtu": 1280, "peers": peers}})
 	}
 	blocked := []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4", "::/0"}
 	if ip := net.ParseIP(s.Settings.Endpoint); ip != nil {

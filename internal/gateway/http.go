@@ -100,11 +100,36 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 		}
 		a.result(w, s.Configure(r.Context(), v))
 	}))
+	mux.HandleFunc("POST /api/clients", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		var v struct {
+			Name string `json:"name"`
+		}
+		if !decode(w, r, &v) {
+			return
+		}
+		a.result(w, s.changeClient(r.Context(), "", "create", v.Name))
+	}))
+	mux.HandleFunc("POST /api/clients/{id}/{action}", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("action") == "create" {
+			apiError(w, 400, "неизвестное действие")
+			return
+		}
+		a.result(w, s.changeClient(r.Context(), r.PathValue("id"), r.PathValue("action"), ""))
+	}))
+	mux.HandleFunc("DELETE /api/clients/{id}", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		a.result(w, s.changeClient(r.Context(), r.PathValue("id"), "delete", ""))
+	}))
 	mux.HandleFunc("POST /api/client/{action}", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		a.result(w, s.ChangeClient(r.Context(), r.PathValue("action")))
 	}))
-	mux.HandleFunc("GET /api/client/config", a.auth(func(w http.ResponseWriter, r *http.Request) {
-		config, e := s.ClientConfig()
+	configHandler := a.auth(func(w http.ResponseWriter, r *http.Request) {
+		var config string
+		var e error
+		if id := r.PathValue("id"); id != "" {
+			config, e = s.ClientConfig(id)
+		} else {
+			config, e = s.ClientConfig()
+		}
 		if e != nil {
 			apiError(w, 400, e.Error())
 			return
@@ -112,9 +137,15 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="happy.conf"`)
 		_, _ = w.Write([]byte(config))
-	}))
-	mux.HandleFunc("GET /api/client/qr", a.auth(func(w http.ResponseWriter, r *http.Request) {
-		config, e := s.ClientConfig()
+	})
+	qrHandler := a.auth(func(w http.ResponseWriter, r *http.Request) {
+		var config string
+		var e error
+		if id := r.PathValue("id"); id != "" {
+			config, e = s.ClientConfig(id)
+		} else {
+			config, e = s.ClientConfig()
+		}
 		if e != nil {
 			apiError(w, 400, e.Error())
 			return
@@ -126,7 +157,11 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 		}
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(png)
-	}))
+	})
+	mux.HandleFunc("GET /api/client/config", configHandler)
+	mux.HandleFunc("GET /api/clients/{id}/config", configHandler)
+	mux.HandleFunc("GET /api/client/qr", qrHandler)
+	mux.HandleFunc("GET /api/clients/{id}/qr", qrHandler)
 	mux.HandleFunc("GET /api/traffic", a.auth(func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.Traffic(r.Context())) }))
 	mux.HandleFunc("POST /api/ping", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		if !s.pingMu.TryLock() {

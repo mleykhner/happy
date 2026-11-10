@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,14 +43,22 @@ func NewService(store *Store, xray *Xray) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Preserve the existing keys and .2 address when upgrading from one client.
+	migrated := state.Client != nil
+	if migrated {
+		c := *state.Client
+		c.ID, c.Name, c.Address = randomToken(), "Первое устройство", 2
+		state.Clients = append(state.Clients, c)
+		state.Client = nil
+	}
 	latched, err := store.isLatched()
 	if err != nil {
 		return nil, err
 	}
 	if latched {
 		state.Selected = ""
-		if state.Client != nil {
-			state.Client.Enabled = false
+		for i := range state.Clients {
+			state.Clients[i].Enabled = false
 		}
 		if err = store.save(state); err != nil {
 			return nil, err
@@ -59,7 +69,7 @@ func NewService(store *Store, xray *Xray) (*Service, error) {
 	}
 
 	// Migrate existing installations once, preserving this identity thereafter.
-	changed := false
+	changed := migrated
 	if state.DeviceID == "" {
 		state.DeviceID = newDeviceID()
 		changed = true
@@ -330,32 +340,68 @@ func (s *Service) Configure(ctx context.Context, v Settings) error {
 	next.Settings = v
 	return s.commit(ctx, next, false)
 }
+
+// ChangeClient preserves the original single-client API for existing callers.
 func (s *Service) ChangeClient(ctx context.Context, action string) error {
+	return s.changeClient(ctx, "", action, "")
+}
+func (s *Service) changeClient(ctx context.Context, id, action, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := cloneState(s.state)
+	// Accept legacy in-memory states too.
+	if next.Client != nil {
+		c := *next.Client
+		c.ID, c.Name, c.Address = randomToken(), "Первое устройство", 2
+		next.Clients = append(next.Clients, c)
+		next.Client = nil
+	}
 	force := false
-	switch action {
-	case "create", "rotate":
-		if action == "create" && next.Client != nil {
-			return errors.New("клиент уже создан")
+	if action == "create" {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = fmt.Sprintf("Устройство %d", len(next.Clients)+1)
 		}
-		if action == "rotate" && next.Client == nil {
-			return errors.New("клиент ещё не создан")
+		if len([]rune(name)) > 120 {
+			return errors.New("имя клиента: до 120 символов")
+		}
+		address := 2
+		for ; address <= 254; address++ {
+			if !slices.ContainsFunc(next.Clients, func(c Client) bool { return c.Address == address }) {
+				break
+			}
+		}
+		if address > 254 {
+			return errors.New("максимум 253 клиента")
 		}
 		priv, pub, err := keyPair()
 		if err != nil {
 			return err
 		}
-		next.Client = &Client{PrivateKey: priv, PublicKey: pub, Enabled: true}
-	case "enable", "disable":
-		if next.Client == nil {
-			return errors.New("клиент ещё не создан")
+		next.Clients = append(next.Clients, Client{ID: randomToken(), Name: name, Address: address, PrivateKey: priv, PublicKey: pub, Enabled: true})
+	} else {
+		index := slices.IndexFunc(next.Clients, func(c Client) bool { return id == "" || c.ID == id })
+		if index < 0 {
+			return errors.New("клиент не найден")
 		}
-		next.Client.Enabled = action == "enable"
-		force = action == "disable"
-	default:
-		return errors.New("неизвестное действие")
+		c := &next.Clients[index]
+		switch action {
+		case "rotate":
+			priv, pub, err := keyPair()
+			if err != nil {
+				return err
+			}
+			c.PrivateKey, c.PublicKey = priv, pub
+			force = true
+		case "enable", "disable":
+			c.Enabled = action == "enable"
+			force = !c.Enabled
+		case "delete":
+			next.Clients = slices.Delete(next.Clients, index, index+1)
+			force = true
+		default:
+			return errors.New("неизвестное действие")
+		}
 	}
 	return s.commit(ctx, next, force)
 }
@@ -381,14 +427,16 @@ func (s *Service) View() map[string]any {
 		}
 		subs = append(subs, map[string]any{"id": sub.ID, "name": sub.Name, "nodes": nodes, "updated": sub.Updated, "error": sub.Error, "metadata": sub.Metadata})
 	}
-	var client any
-	if s.state.Client != nil {
-		client = map[string]any{"enabled": s.state.Client.Enabled, "publicKey": s.state.Client.PublicKey}
+	clients := []any{}
+	enabled := false
+	for _, c := range s.state.clients() {
+		clients = append(clients, map[string]any{"id": c.ID, "name": c.Name, "enabled": c.Enabled, "publicKey": c.PublicKey, "address": fmt.Sprintf("10.77.0.%d", c.Address)})
+		enabled = enabled || c.Enabled
 	}
-	return map[string]any{"deviceId": s.state.DeviceID, "settings": s.state.Settings, "subscriptions": subs, "selected": s.state.Selected, "client": client, "running": s.xray.Running(), "exitDisabled": s.state.ExitDisabled, "blocked": s.state.ExitDisabled || s.state.activeNode() == nil || !s.xray.Running() || s.state.Client == nil || !s.state.Client.Enabled, "health": s.health, "events": append([]Event{}, s.events...)}
+	return map[string]any{"deviceId": s.state.DeviceID, "settings": s.state.Settings, "subscriptions": subs, "selected": s.state.Selected, "clients": clients, "running": s.xray.Running(), "exitDisabled": s.state.ExitDisabled, "blocked": s.state.ExitDisabled || s.state.activeNode() == nil || !s.xray.Running() || !enabled, "health": s.health, "events": append([]Event{}, s.events...)}
 }
-func (s *Service) ClientConfig() (string, error) {
+func (s *Service) ClientConfig(ids ...string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state.clientConfig()
+	return s.state.clientConfig(ids...)
 }

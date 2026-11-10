@@ -247,8 +247,37 @@ func TestAdminAuthenticationCSRFAndSecretExport(t *testing.T) {
 	if w = request("GET", "/api/client/qr", "", "", cookie); w.Code != 200 || w.Header().Get("Content-Type") != "image/png" || !strings.HasPrefix(w.Body.String(), "\x89PNG") {
 		t.Fatal("invalid QR response")
 	}
-	if w = request("GET", "/api/state", "", "", cookie); strings.Contains(w.Body.String(), s.state.Client.PrivateKey) {
+	if w = request("GET", "/api/state", "", "", cookie); strings.Contains(w.Body.String(), s.state.Clients[0].PrivateKey) {
 		t.Fatal("private key exposed in overview")
+	}
+
+	if w = request("POST", "/api/clients", `{"name":"Second"}`, "https://panel.example", cookie); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	second := s.state.Clients[1]
+	path := "/api/clients/" + second.ID
+	for _, suffix := range []string{"/config", "/qr"} {
+		if w = request("GET", path+suffix, "", "", nil); w.Code != 401 {
+			t.Fatal("unauthenticated client export", suffix)
+		}
+		if w = request("GET", path+suffix, "", "", cookie); w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("client export failed", suffix, w.Body.String())
+		}
+	}
+	if w = request("GET", path+"/config", "", "", cookie); !strings.Contains(w.Body.String(), second.PrivateKey) || strings.Contains(w.Body.String(), s.state.Clients[0].PrivateKey) {
+		t.Fatal("wrong client exported")
+	}
+	if w = request("GET", "/api/clients/missing/config", "", "", cookie); w.Code == 200 {
+		t.Fatal("missing client exported")
+	}
+	if w = request("POST", path+"/disable", "", "https://evil.example", cookie); w.Code != 403 {
+		t.Fatal("client mutation accepted foreign origin")
+	}
+	if w = request("POST", path+"/disable", "", "https://panel.example", cookie); w.Code != 200 || s.state.Clients[1].Enabled || !s.state.Clients[0].Enabled {
+		t.Fatal("wrong client disabled")
+	}
+	if w = request("DELETE", path, "", "https://panel.example", cookie); w.Code != 200 || len(s.state.Clients) != 1 {
+		t.Fatal("client deletion failed")
 	}
 	if w = request("POST", "/api/logout", "", "https://panel.example", cookie); w.Code != 200 {
 		t.Fatal(w.Code)
@@ -322,7 +351,7 @@ func TestRevocationLatchSurvivesDatabaseWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.state.Selected != "" || recovered.state.Client.Enabled {
+	if recovered.state.Selected != "" || recovered.state.Clients[0].Enabled {
 		t.Fatal("old exit restored after restart")
 	}
 }

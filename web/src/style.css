@@ -762,3 +762,18 @@ footer {
 .traffic-monitor polyline { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .traffic-download { stroke: #22a77a; }
 .traffic-upload { stroke: #618cf5; }
+
+.stack {
+  display: grid;
+  gap: 20px;
+}
+.client-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  margin-top: 20px;
+}
+.client-form label {
+  flex: 1 1 240px;
+}

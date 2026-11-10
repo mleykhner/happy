@@ -160,6 +160,23 @@ func TestWireGuardThroughProvider(t *testing.T) {
 	}
 	assertProviderReachable(t, client)
 
+	// Two independent devices must work through the same inbound and selected exit.
+	if err = service.ChangeClient(t.Context(), "create"); err != nil {
+		t.Fatal(err)
+	}
+	clients := service.View()["clients"].([]any)
+	secondID := clients[1].(map[string]any)["id"].(string)
+	secondConfig, err := service.ClientConfig(secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wgSecond, netSecond := connect(t, secondConfig)
+	defer wgSecond.Close()
+	secondHTTP := &http.Client{Transport: &http.Transport{DialContext: netSecond.DialContext, DisableKeepAlives: true}, Timeout: 2 * time.Second}
+	t.Log("checking two independent WireGuard clients")
+	assertProviderReachable(t, secondHTTP)
+	assertProviderReachable(t, client)
+
 	// A DNS-shaped UDP payload proves UDP is carried through WireGuard and VLESS.
 	udp, err := tnet.DialContext(t.Context(), "udp", "1.1.1.1:53")
 	if err != nil {
@@ -182,6 +199,7 @@ func TestWireGuardThroughProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertBlocked(t, tnet, "1.1.1.1:80")
+	assertProviderReachable(t, secondHTTP)
 	wg.Close()
 	clientConfig, err = service.ClientConfig()
 	if err != nil {
@@ -376,7 +394,11 @@ func connect(t *testing.T, config string) (*device.Device, *netstack.Net) {
 		}
 		return hex.EncodeToString(b)
 	}
-	tun, tnet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.77.0.2"), netip.MustParseAddr("fd77::2")}, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, 1280)
+	addresses := []netip.Addr{}
+	for part := range strings.SplitSeq(get("Address"), ",") {
+		addresses = append(addresses, netip.MustParsePrefix(strings.TrimSpace(part)).Addr())
+	}
+	tun, tnet, err := netstack.CreateNetTUN(addresses, []netip.Addr{netip.MustParseAddr("1.1.1.1")}, 1280)
 	if err != nil {
 		t.Fatal(err)
 	}

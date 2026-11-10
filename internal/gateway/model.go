@@ -33,6 +33,9 @@ type Subscription struct {
 	Error     string               `json:"error"`
 }
 type Client struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Address    int    `json:"address"`
 	PrivateKey string `json:"privateKey"`
 	PublicKey  string `json:"publicKey"`
 	Enabled    bool   `json:"enabled"`
@@ -50,7 +53,8 @@ type State struct {
 	Selected      string         `json:"selected"`
 	ServerPrivate string         `json:"serverPrivate"`
 	ServerPublic  string         `json:"serverPublic"`
-	Client        *Client        `json:"client"`
+	Client        *Client        `json:"client,omitempty"` // Legacy state, migrated on load.
+	Clients       []Client       `json:"clients"`
 }
 
 func initialState() (State, error) {
@@ -101,14 +105,30 @@ func (s Settings) validate() error {
 	}
 	return nil
 }
-func (s State) clientConfig() (string, error) {
-	if s.Client == nil {
-		return "", errors.New("клиент ещё не создан")
+func (s State) clients() []Client {
+	if s.Client != nil && len(s.Clients) == 0 {
+		c := *s.Client
+		c.Address = 2
+		return []Client{c}
+	}
+	return s.Clients
+}
+func (s State) clientConfig(ids ...string) (string, error) {
+	clients := s.clients()
+	var client *Client
+	for i := range clients {
+		if len(ids) == 0 || ids[0] == clients[i].ID {
+			client = &clients[i]
+			break
+		}
+	}
+	if client == nil {
+		return "", errors.New("клиент не найден")
 	}
 	if s.Settings.Endpoint == "" {
 		return "", errors.New("укажите внешний адрес сервера в настройках")
 	}
-	return fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.77.0.2/32, fd77::2/128\nDNS = 1.1.1.1\nMTU = 1280\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n", s.Client.PrivateKey, s.ServerPublic, net.JoinHostPort(s.Settings.Endpoint, strconv.Itoa(s.Settings.WireGuardPort))), nil
+	return fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.77.0.%d/32, fd77::%x/128\nDNS = 1.1.1.1\nMTU = 1280\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n", client.PrivateKey, client.Address, client.Address, s.ServerPublic, net.JoinHostPort(s.Settings.Endpoint, strconv.Itoa(s.Settings.WireGuardPort))), nil
 }
 
 // Use an installation identity rather than exposing host hardware identifiers.

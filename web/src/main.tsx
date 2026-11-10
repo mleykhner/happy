@@ -84,7 +84,7 @@ type State = {
   settings: Settings;
   subscriptions: Subscription[];
   selected: string;
-  client: null | { enabled: boolean; publicKey: string };
+  clients: { id: string; name: string; address: string; enabled: boolean; publicKey: string }[];
   running: boolean;
   exitDisabled: boolean;
   blocked: boolean;
@@ -233,7 +233,8 @@ function App() {
   const [pings, setPings] = useState<Record<string, NodePing>>({});
   const [pinging, setPinging] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [qr, setQR] = useState(false);
+  const [qr, setQR] = useState("");
+  const [clientName, setClientName] = useState("");
   const load = async () => {
     const s = await api<State>("/state");
     setState(s);
@@ -244,7 +245,7 @@ function App() {
     if (e instanceof Unauthorized) {
       setAuthed(false);
       setState(null);
-      setQR(false);
+      setQR("");
     }
     setError(e instanceof Error ? e.message : "Ошибка соединения");
   };
@@ -370,7 +371,7 @@ function App() {
               key={id}
               onClick={() => {
                 setTab(id);
-                setQR(false);
+                setQR("");
                 setNotice("");
                 setError("");
                 setCurrentPassword("");
@@ -401,7 +402,7 @@ function App() {
                 .then(() => {
                   setAuthed(false);
                   setState(null);
-                  setQR(false);
+                  setQR("");
                 })
                 .catch(report)
                 .finally(() => setBusy(false));
@@ -487,10 +488,10 @@ function App() {
                 {state.blocked
                   ? "Клиентский трафик заблокирован."
                   : "Маршрут для WireGuard-клиента настроен."}{" "}
-                {!state.client
+                {!state.clients.length
                   ? "Создайте WireGuard-клиент в разделе «Подключение»."
-                  : !state.client.enabled
-                    ? "WireGuard-клиент отключён."
+                  : !state.clients.some(c => c.enabled)
+                    ? "Все WireGuard-клиенты отключены."
                     : ""}
               </p>
               <Button
@@ -593,13 +594,9 @@ function App() {
               <article className="card">
                 <p className="eyebrow">ПОДКЛЮЧЕНИЕ</p>
                 <h3>
-                  {state.client
-                    ? state.client.enabled
-                      ? "Включено"
-                      : "Отключено"
-                    : "Не создано"}
+                  {state.clients.filter(c => c.enabled).length} / {state.clients.length}
                 </h3>
-                <p className="muted">WireGuard · один клиент</p>
+                <p className="muted">WireGuard · включённые клиенты</p>
               </article>
               <article className="card">
                 <p className="eyebrow">ПРОВЕРКА ВЫХОДА</p>
@@ -735,109 +732,49 @@ function App() {
           </>
         )}
         {tab === "client" && (
-          <section className="card client-card">
-            <span className="pill">ОДНО УСТРОЙСТВО</span>
-            <h2>Ваш WireGuard-клиент</h2>
-            <p className="muted">
-              Установите WireGuard на устройстве и импортируйте конфиг или
-              отсканируйте QR-код.
-            </p>
-            {!state.client ? (
-              <Button
-                disabled={busy}
-                onClick={() =>
-                  action(
-                    () => api("/client/create", "POST"),
-                    "Подключение создано",
-                  )
-                }
-              >
-                Создать подключение +
-              </Button>
-            ) : (
-              <>
+          <div className="stack">
+            <section className="card">
+              <h2>WireGuard-клиенты</h2>
+              <p className="muted">Создайте отдельную конфигурацию для каждого устройства. Все клиенты используют выбранный сервер выхода.</p>
+              <form className="client-form" onSubmit={e => {
+                e.preventDefault();
+                action(async () => { await api("/clients", "POST", {name: clientName}); setClientName(""); }, "Подключение создано");
+              }}>
+                <label>Имя устройства<input value={clientName} onChange={e => setClientName(e.target.value)} maxLength={120} placeholder="Например, телефон" /></label>
+                <Button disabled={busy || state.clients.length >= 253} type="submit">Создать подключение +</Button>
+              </form>
+              {!state.settings.endpoint && <div className="alert">Укажите внешний адрес сервера в настройках перед скачиванием конфигурации.</div>}
+            </section>
+            {state.clients.map(client => (
+              <section className="card client-card" key={client.id}>
+                <h2>{client.name}</h2>
                 <dl>
-                  <dt>Состояние</dt>
-                  <dd>{state.client.enabled ? "Включено" : "Отключено"}</dd>
-                  <dt>Адрес клиента</dt>
-                  <dd>10.77.0.2</dd>
-                  <dt>Публичный ключ</dt>
-                  <dd className="key">{state.client.publicKey}</dd>
+                  <dt>Состояние</dt><dd>{client.enabled ? "Включено" : "Отключено"}</dd>
+                  <dt>Адрес клиента</dt><dd>{client.address}</dd>
+                  <dt>Публичный ключ</dt><dd className="key">{client.publicKey}</dd>
                 </dl>
-                {!state.settings.endpoint && (
-                  <div className="alert">
-                    Укажите внешний адрес сервера в настройках перед скачиванием
-                    конфигурации.
-                  </div>
-                )}
                 <div className="actions">
-                  <Button asChild variant="outline">
-                    <a href="/api/client/config" download="happy.conf">
-                      Скачать конфиг ↓
-                    </a>
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={!state.settings.endpoint}
-                    onClick={() => setQR(!qr)}
-                  >
-                    {qr ? "Скрыть QR" : "Показать QR"}
-                  </Button>
-                  <Button
-                    disabled={busy}
-                    variant="outline"
-                    onClick={() =>
-                      action(() =>
-                        api(
-                          `/client/${state.client?.enabled ? "disable" : "enable"}`,
-                          "POST",
-                        ),
-                      )
+                  {state.settings.endpoint && <Button asChild variant="outline"><a href={`/api/clients/${client.id}/config`} download="happy.conf">Скачать конфиг ↓</a></Button>}
+                  <Button variant="outline" disabled={!state.settings.endpoint} onClick={() => setQR(qr === client.id ? "" : client.id)}>{qr === client.id ? "Скрыть QR" : "Показать QR"}</Button>
+                  <Button disabled={busy} variant="outline" onClick={() => action(() => api(`/clients/${client.id}/${client.enabled ? "disable" : "enable"}`, "POST"))}>{client.enabled ? "Отключить" : "Включить"}</Button>
+                  <Button disabled={busy} variant="outline" onClick={() => {
+                    if (confirm("Перевыпустить ключи этого клиента? Старый конфиг перестанет работать.")) {
+                      setQR("");
+                      action(() => api(`/clients/${client.id}/rotate`, "POST"), "Ключи перевыпущены. Импортируйте новый конфиг.");
                     }
-                  >
-                    {state.client.enabled ? "Отключить" : "Включить"}
-                  </Button>
-                  <Button
-                    variant="danger"
-                    disabled={busy}
-                    onClick={() => {
-                      if (
-                        confirm(
-                          "Перевыпустить ключи? Старый конфиг перестанет работать после успешного применения.",
-                        )
-                      ) {
-                        setQR(false);
-                        action(
-                          () => api("/client/rotate", "POST"),
-                          "Ключи перевыпущены. Импортируйте новый конфиг.",
-                        );
-                      }
-                    }}
-                  >
-                    Перевыпустить ключи
-                  </Button>
+                  }}>Перевыпустить ключи</Button>
+                  <Button disabled={busy} variant="danger" onClick={() => {
+                    if (confirm(`Удалить подключение «${client.name}»? Его конфиг перестанет работать.`)) {
+                      setQR("");
+                      action(() => api(`/clients/${client.id}`, "DELETE"), "Подключение удалено");
+                    }
+                  }}>Удалить</Button>
                 </div>
-                {qr && (
-                  <div className="qr">
-                    <img
-                      src="/api/client/qr"
-                      width="320"
-                      height="320"
-                      alt="QR-код конфигурации WireGuard"
-                    />
-                    <p className="muted">
-                      QR содержит приватный ключ. Не передавайте его
-                      посторонним.
-                    </p>
-                  </div>
-                )}
-                <p className="footnote">
-                  Весь трафик → выбранный узел. DNS → через прокси. IPv6 →
-                  блокируется на шлюзе.
-                </p>
-              </>
-            )}
-          </section>
+                {qr === client.id && <div className="qr"><img src={`/api/clients/${client.id}/qr`} width="320" height="320" alt="QR-код конфигурации WireGuard" /><p className="muted">QR содержит приватный ключ. Не передавайте его посторонним.</p></div>}
+                <p className="footnote">Весь трафик → выбранный узел. DNS → через прокси. IPv6 → блокируется на шлюзе.</p>
+              </section>
+            ))}
+          </div>
         )}
         {tab === "settings" && settings && (
           <>
