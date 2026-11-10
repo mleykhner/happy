@@ -1,0 +1,46 @@
+# Local state, credentials and runtime files
+/data/
+/secrets/
+/.aws/
+/.codex/
+/.agents/
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.key
+*.pem
+*.p12
+*.pfx
+*.conf
+*.log
+*.har
+*.pcap
+*.pcapng
+
+# Build products and downloaded executables
+/bin/
+/dist/
+/vendor/
+**/node_modules/
+result
+result-*
+coverage.out
+*.test
+
+# Editor and operating-system files
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# internal/webui/dist and packaging/vendor.tar.gz are required by Nix builds.

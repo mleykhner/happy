@@ -1,0 +1,25 @@
+services:
+  happy:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080/tcp"
+      - "51820:51820/udp"
+    volumes:
+      - happy-data:/data
+    environment:
+      HAPPY_PASSWORD_FILE: /run/secrets/admin_password
+      # For HTTPS behind a reverse proxy, set both variables:
+      # HAPPY_ORIGIN: https://vpn.example.org
+      # HAPPY_SECURE_COOKIE: "true"
+    secrets:
+      - admin_password
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+secrets:
+  admin_password:
+    file: ./secrets/admin-password
+volumes:
+  happy-data:

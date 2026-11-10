@@ -1,0 +1,32 @@
+[Unit]
+Description=Happy WireGuard to Xray gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=happy
+Group=happy
+ExecStart=/usr/bin/happy serve
+Environment=HAPPY_DATA_DIR=/var/lib/happy
+Environment=HAPPY_LISTEN=127.0.0.1:8080
+Environment=HAPPY_XRAY=/usr/lib/happy/xray
+EnvironmentFile=-/etc/happy/environment
+StateDirectory=happy
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,49 @@
+name: Check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: tar -xzf packaging/vendor.tar.gz
+      - run: npm ci --ignore-scripts && npm run build
+        working-directory: web
+      - run: go test -mod=vendor -race ./...
+      - run: go vet -mod=vendor ./...
+      - run: sh scripts/fetch-xray.sh amd64 ./bin
+      - run: HAPPY_TEST_XRAY=$PWD/bin/xray go test -mod=vendor ./internal/gateway -run TestRealXray -v
+      - run: HAPPY_TEST_XRAY=$PWD/../bin/xray go test -mod=mod -race -v -timeout 120s ./...
+        working-directory: integration
+      - run: sh scripts/build-deb.sh amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-amd64
+          path: dist/*.deb
+  nix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix flake check
+      - run: nix build .#happy
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false

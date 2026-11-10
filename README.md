@@ -1,0 +1,175 @@
+# Happy
+
+Личный VPN-шлюз для Linux: **WireGuard-клиент → Xray → выбранный узел из подписки провайдера**. Русская веб-панель, один администратор и одно клиентское подключение. Приложение самостоятельно разработано; INCY используется как функциональный ориентир.
+
+## Возможности
+
+- Несколько HTTP(S)-подписок, обновление вручную и по расписанию (по умолчанию раз в час).
+- Постоянный HWID экземпляра шлюза передаётся в `x-hwid`; система и модель — в `x-device-os`/`x-device-model`. ID сохраняется в SQLite и показан в настройках. Шлюз занимает собственное место в лимите устройств провайдера. User-Agent остаётся `Happy/0.1`; если провайдер допускает только определённые приложения, нужна поддержка Happy с его стороны.
+- Ответы об отказе HWID и превышении лимита показываются как ошибки подписки; служебные VLESS-записи с такими сообщениями не предлагаются как узлы.
+- Текстовые и Base64-списки VLESS, VMess, Trojan, Shadowsocks. Транспорты TCP/RAW, WebSocket, gRPC, XHTTP (включая JSON `extra`, XMUX и `downloadSettings`), HTTPUpgrade; TLS и REALITY. Неизвестный транспорт отклоняется явно.
+- Единый выход, выбираемый вручную. Без выбранного узла выхода нет. Автопереключения нет.
+- Один WireGuard-клиент: создание, конфиг, QR, отключение, перевыпуск ключей.
+- DNS клиента отправляется через выбранный прокси как обычный UDP/TCP-трафик. Клиентский IPv6 направляется в туннель и блокируется на шлюзе.
+- Блокируются приватные, служебные IPv4-диапазоны, IPv6 и локальные адреса шлюза. Не требуется системный WireGuard-интерфейс, IP forwarding или NAT.
+- Проверка конфигурации настоящим Xray перед применением, откат при неудачном запуске, восстановление упавшего процесса раз в 10 секунд.
+- При исчезновении выбранного узла выход закрывается. Ошибка загрузки сохраняет последнюю корректную подписку.
+- SQLite, файлы конфигурации с правами `0600`, каталог данных `0700`, bcrypt-пароль, сессионная HttpOnly/SameSite-cookie, проверка Origin, ограничение попыток входа.
+
+## Docker
+
+Нужен Linux Docker Engine с Compose. Публикуются только TCP панели и UDP WireGuard; `privileged`, `NET_ADMIN`, `/dev/net/tun` и host network не нужны.
+
+```sh
+mkdir -p secrets
+chmod 700 secrets
+# Запишите пароль длиной 12–72 байта в secrets/admin-password.
+# Не передавайте пароль аргументом shell-команды и не добавляйте его в git.
+chmod 600 secrets/admin-password
+# Контейнер работает под UID 10001: файл должен быть доступен этому UID.
+sudo chown 10001:10001 secrets/admin-password
+docker compose up -d --build
+```
+
+Панель: `http://127.0.0.1:8080`. Для удалённого сервера используйте SSH-туннель:
+
+```sh
+ssh -L 8080:127.0.0.1:8080 user@server
+```
+
+Для доступа по HTTPS настройте reverse proxy, затем в `compose.yaml` задайте `HAPPY_ORIGIN=https://vpn.example.org` и `HAPPY_SECURE_COOKIE=true`. Backend не доверяет произвольным `X-Forwarded-*` заголовкам. При проксировании с другого контейнера поместите его в общую Docker-сеть и используйте `http://happy:8080` как upstream.
+
+Пример Caddy на хосте:
+
+```caddyfile
+vpn.example.org {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+После входа:
+
+1. В «Настройках» укажите внешний IP/домен сервера без порта.
+2. В «Подписках» добавьте URL провайдера и нажмите «Обновить».
+3. Выберите единственный выходной узел.
+4. В «Подключении» создайте клиента и импортируйте конфиг/QR в WireGuard.
+5. Выполните «Проверить соединение» в обзоре.
+
+Откройте UDP 51820 в firewall сервера и у облачного провайдера. При смене порта в панели измените также публикацию Docker-порта и клиентский конфиг.
+
+## Ubuntu 24.04
+
+Сборка `.deb` выполняется из исходников. Нужны Go ≥1.24, Node.js ≥22.12, npm, curl, unzip, shasum и dpkg-deb:
+
+```sh
+make ui
+sh scripts/build-deb.sh amd64   # либо arm64
+sudo apt install ./dist/happy-gateway_0.1.0_amd64.deb
+```
+
+Пакет включает Xray **v26.11.9**, проверенный по SHA-256 из upstream release. Сервис запускается непривилегированным пользователем `happy`. Установка пакета не включает сервис до настройки пароля.
+
+Создайте `/etc/happy/admin-password` с паролем, владельцем `root:happy` и правами `0640`, затем `/etc/happy/environment`:
+
+```ini
+HAPPY_PASSWORD_FILE=/etc/happy/admin-password
+# Для HTTPS reverse proxy:
+# HAPPY_ORIGIN=https://vpn.example.org
+# HAPPY_SECURE_COOKIE=true
+```
+
+```sh
+sudo systemctl enable --now happy
+sudo journalctl -u happy -f
+```
+
+Панель по умолчанию слушает `127.0.0.1:8080`. Для однократной установки/смены пароля без постоянного password-файла:
+
+```sh
+sudo -u happy happy set-password --data-dir /var/lib/happy --password-file /etc/happy/admin-password
+sudo systemctl restart happy
+```
+
+Если задан `HAPPY_PASSWORD_FILE`, он авторитетен при каждом запуске и заменяет пароль в БД. Чтобы сменить пароль, измените этот файл и перезапустите сервис. Перезапуск отзывает все сессии.
+
+## Nix и NixOS
+
+```sh
+nix build .#happy
+nix run .#happy -- version
+```
+
+Пакет включает обёртку с закреплённым Xray v26.11.9. Сборка Go использует локальный архив зависимостей; готовая панель включена в исходники. Node.js на целевой машине не нужен. Поддерживаются `x86_64-linux` и `aarch64-linux`.
+
+Подключите flake как input `happy`, затем:
+
+```nix
+{
+  imports = [ inputs.happy.nixosModules.default ];
+  services.happy-gateway = {
+    enable = true;
+    passwordFile = "/run/secrets/happy-admin-password";
+    openFirewall = true;
+    wireGuardPort = 51820;
+    # Необязательно: nginx + HTTPS (ACME)
+    domain = "vpn.example.org";
+  };
+  # При включённом domain также настройте ACME:
+  security.acme.acceptTerms = true;
+  security.acme.defaults.email = "admin@example.org";
+  networking.firewall.allowedTCPPorts = [ 80 443 ];
+}
+```
+
+`passwordFile` — строковый путь к runtime-секрету, например sops-nix/agenix; **не Nix path literal** и не `builtins.readFile`. Содержимое не должно попадать в Nix store. systemd передаёт пароль через `LoadCredential`. Состояние — `/var/lib/happy`; используется `DynamicUser`.
+
+Порт в NixOS-модуле открывает firewall; соответствующий порт приложения меняется в панели. Без `domain` HTTPS и внешний Origin настраиваются самостоятельно через `systemd.services.happy.environment`.
+
+## Разработка
+
+```sh
+tar -xzf packaging/vendor.tar.gz
+cd web
+npm ci --ignore-scripts
+npm run build
+cd ..
+CGO_ENABLED=0 go build -mod=vendor -o bin/happy ./cmd/happy
+sh scripts/fetch-xray.sh darwin-arm64 ./bin  # на Linux: amd64 или arm64
+HAPPY_XRAY=$PWD/bin/xray HAPPY_PASSWORD_FILE=/absolute/path/password ./bin/happy serve
+```
+
+Встроенная панель собирается в `internal/webui/dist`. Для Vite dev server используйте `HAPPY_ORIGIN=http://127.0.0.1:5173`, откройте `http://127.0.0.1:5173`; Vite проксирует `/api` на backend.
+
+```sh
+make test
+HAPPY_TEST_XRAY=$PWD/bin/xray go test -mod=vendor ./internal/gateway -run TestRealXray -v
+```
+
+`make test` проверяет разбор подписок, безопасность маршрутов, откат процесса, исчезновение узла, сохранность ключей, отзыв доступа при отказе БД, авторизацию и Origin. Реальная проверка совместимости конфигураций Xray выполняется отдельно и включена в CI. Для полного теста WireGuard см. `integration/README.md`.
+
+При изменении зависимостей Go выполните `go mod tidy`, затем `make vendor`. Архив `packaging/vendor.tar.gz` содержит vendor-дерево с лицензиями; распакованное дерево исключено из git. Для обновления панели выполните `make ui`. `web/package-lock.json` фиксирует npm-зависимости; overrides фиксируют транзитивные версии для воспроизводимой сборки.
+
+## Переменные окружения
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `HAPPY_LISTEN` | `127.0.0.1:8080` | HTTP-адрес панели; Docker: `0.0.0.0:8080` |
+| `HAPPY_DATA_DIR` | `./data` | SQLite, ключи, runtime-конфигурация |
+| `HAPPY_XRAY` | `xray` | Путь к исполняемому файлу |
+| `HAPPY_PASSWORD_FILE` | — | Файл пароля администратора, применяется при старте |
+| `HAPPY_ORIGIN` | схема и Host запроса | Точный публичный origin, без завершающего `/` |
+| `HAPPY_SECURE_COOKIE` | `false` | `true` для HTTPS; автоматически включается при HTTPS Origin |
+
+## Границы первого выпуска
+
+- Нет TUN-входа, нескольких клиентов, пользовательских кабинетов, автопереключения, Clash YAML, произвольного Xray JSON, Shadowsocks-плагинов.
+- Подписка целиком отклоняется, если содержит неподдерживаемую/повреждённую ссылку; последняя корректная версия сохраняется. Сам URL подписки в журналы и API не выдаётся.
+- Проверка выхода делает HTTPS-запрос к `www.gstatic.com/generate_204` через выбранный узел. Это проверяет прокси, но не WireGuard-канал устройства и не поддержку UDP провайдером.
+- DNS имени самого прокси-сервера и HTTP-загрузка подписки выполняются самим сервером через его обычное соединение. **Клиентский DNS** проходит через выбранный узел. Приложение не перехватывает трафик остальных процессов Linux.
+- При смене узла/ключей возможен краткий разрыв. При неудачной смене восстанавливается предыдущая конфигурация; перевыпуск считается состоявшимся только после успешного применения.
+- Блокировка выхода действует на шлюзе. Поведение устройства после выключения WireGuard на самом устройстве определяется его VPN-клиентом.
+- Подписки и ключи хранятся в SQLite без дополнительного шифрования на диске. Защита — права файлов и шифрование диска/резервной копии. Для резервирования остановите сервис и скопируйте каталог данных целиком.
+
+## Проверка в текущем окружении
+
+Backend-тесты с `-race`, `go vet`, TypeScript/Vite production build и Linux cross-build проверяются локально. Реальные сетевые тесты требуют окружения с разрешёнными TCP/UDP-сокетами. Docker daemon, Nix и Browser в среде разработки недоступны; Docker/Nix установщики и реальная совместимость Xray должны пройти добавленный CI перед эксплуатацией. `flake.lock` нужно сгенерировать командой `nix flake lock` в среде с Nix; выдуманный lock-файл не поставляется.
