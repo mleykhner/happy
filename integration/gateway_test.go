@@ -58,7 +58,25 @@ func TestWireGuardThroughProvider(t *testing.T) {
 	}()
 	tcpPort := freeTCP(t)
 	wgPort := freeUDP(t)
-	provider := map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": []any{map[string]any{"listen": "127.0.0.1", "port": tcpPort, "protocol": "vless", "settings": map[string]any{"clients": []any{map[string]any{"id": "123e4567-e89b-12d3-a456-426614174000"}}, "decryption": "none"}}}, "outbounds": []any{map[string]any{"tag": "tcp", "protocol": "freedom", "settings": map[string]any{"redirect": strings.TrimPrefix(httpTarget.URL, "http://")}}, map[string]any{"tag": "udp", "protocol": "freedom", "settings": map[string]any{"redirect": udpTarget.LocalAddr().String()}}}, "routing": map[string]any{"rules": []any{map[string]any{"type": "field", "network": "udp", "outboundTag": "udp"}}}}
+	// Xray's Freedom finalRules block private targets for VLESS by default,
+	// including redirected destinations. Allow only our two loopback fixtures.
+	provider := map[string]any{
+		"log": map[string]any{"loglevel": "none"},
+		"inbounds": []any{map[string]any{
+			"listen": "127.0.0.1", "port": tcpPort, "protocol": "vless",
+			"settings": map[string]any{
+				"clients":    []any{map[string]any{"id": "123e4567-e89b-12d3-a456-426614174000"}},
+				"decryption": "none",
+			},
+		}},
+		"outbounds": []any{
+			fixtureFreedom(t, "tcp", strings.TrimPrefix(httpTarget.URL, "http://")),
+			fixtureFreedom(t, "udp", udpTarget.LocalAddr().String()),
+		},
+		"routing": map[string]any{"rules": []any{
+			map[string]any{"type": "field", "network": "udp", "outboundTag": "udp"},
+		}},
+	}
 	b, _ := json.Marshal(provider)
 	config := filepath.Join(t.TempDir(), "provider.json")
 	if err = os.WriteFile(config, b, 0600); err != nil {
@@ -176,6 +194,27 @@ func TestWireGuardThroughProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertBlocked(t, tnet, "1.1.1.1:80")
+}
+
+func fixtureFreedom(t *testing.T, network, address string) map[string]any {
+	t.Helper()
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !ip.IsLoopback() {
+		t.Fatal("test target must be a loopback IP")
+	}
+	return map[string]any{
+		"tag": network, "protocol": "freedom",
+		"settings": map[string]any{
+			"redirect": address,
+			"finalRules": []any{map[string]any{
+				"action": "allow", "network": network, "ip": []string{netip.PrefixFrom(ip, ip.BitLen()).String()}, "port": port,
+			}},
+		},
+	}
 }
 
 // Bound startup/recovery failures while requiring an exact fixture response.
