@@ -28,8 +28,23 @@ chmod 700 secrets
 chmod 600 secrets/admin-password
 # Контейнер работает под UID 10001: файл должен быть доступен этому UID.
 sudo chown 10001:10001 secrets/admin-password
-docker compose up -d --build
+docker compose pull
+docker compose up -d --no-build
 ```
+
+Compose использует готовый образ `ghcr.io/mleykhner/happy:latest` для `amd64` или `arm64`. Для обновления повторите `docker compose pull` и `docker compose up -d --no-build`; данные сохраняются в томе `happy-data`. Для сборки из локальных исходников используйте `docker compose up -d --build`.
+
+Можно закрепить конкретную версию или digest через `HAPPY_IMAGE`:
+
+```sh
+export HAPPY_IMAGE=ghcr.io/mleykhner/happy:0.1.0
+docker compose pull
+docker compose up -d --no-build
+```
+
+Тег версии доступен после публикации соответствующего Git-тега. GitHub Actions публикует образ только после успешных `test` и `nix`: push в основную ветку обновляет `latest`, push тега `v0.1.0` создаёт `v0.1.0`, `0.1.0` и `0.1`. Для опубликованного коммита также доступен тег `sha-<полный SHA>`. Предварительные версии не обновляют тег `major.minor`. Pull request и остальные ветки проверяют сборку без публикации. Авторизация выполняется встроенным `GITHUB_TOKEN` с `packages: write`, отдельный секрет не нужен.
+
+При первой публикации GHCR создаёт пакет с закрытой видимостью. Для скачивания без авторизации откройте пакет `happy` в GitHub → Package settings → Change visibility → Public. До изменения видимости для скачивания нужен вход в GHCR с доступом к пакету. См. [документацию GitHub Container Registry](https://docs.github.com/ru/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 
 Панель локально: `http://127.0.0.1:8080`. Для прямого доступа по адресу `http://SERVER_IP:8080` измените публикацию порта в `compose.yaml` на `"8080:8080/tcp"` и откройте TCP 8080 в firewall сервера и у хостинга.
 

@@ -1,5 +1,6 @@
 services:
   happy:
+    image: ${HAPPY_IMAGE:-ghcr.io/mleykhner/happy:latest}
     build: .
     restart: unless-stopped
     ports:
