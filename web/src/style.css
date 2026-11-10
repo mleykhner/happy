@@ -777,3 +777,10 @@ footer {
 .client-form label {
   flex: 1 1 240px;
 }
+
+.dns-settings { display: grid; gap: 18px; border-top: 1px solid var(--border, #ddd); padding-top: 24px; }
+.dns-upstream { display: grid; gap: 16px; border: 1px solid var(--border, #ddd); border-radius: 12px; padding: 18px; min-width: 0; }
+.dns-upstream legend { padding: 0 8px; font-weight: 600; }
+.dns-settings select, .dns-settings textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border, #ddd); border-radius: 8px; background: var(--surface, white); color: inherit; font: inherit; }
+.dns-settings .dns-toggle { display: flex; align-items: center; gap: 10px; }
+.dns-settings .dns-toggle input { width: 18px; height: 18px; }

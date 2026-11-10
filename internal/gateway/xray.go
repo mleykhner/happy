@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,15 +21,18 @@ import (
 const stagedConfigName = "xray.next.json"
 
 type Xray struct {
-	mu          sync.Mutex
-	binary, dir string
-	cmd         *exec.Cmd
-	done        chan struct{}
-	last        []byte
-	metricsPort int
-	generation  uint64
-	probePort   int
-	probeSecret string
+	mu             sync.Mutex
+	binary, dir    string
+	cmd            *exec.Cmd
+	done           chan struct{}
+	last           []byte
+	metricsPort    int
+	generation     uint64
+	probePort      int
+	probeSecret    string
+	dnsSocksPort   int
+	dnsForwardPort int
+	dnsActive      bool
 }
 
 func NewXray(binary, dir string) *Xray {
@@ -50,7 +54,7 @@ func BuildConfig(s State, probePort int, probeSecret string) ([]byte, error) {
 	return buildConfig(s, probePort, probeSecret, 0)
 }
 
-func buildConfig(s State, probePort int, probeSecret string, metricsPort int) ([]byte, error) {
+func buildConfig(s State, probePort int, probeSecret string, metricsPort int, dnsPorts ...int) ([]byte, error) {
 	block := map[string]any{"tag": "block", "protocol": "blackhole", "settings": map[string]any{}}
 	outbounds := []any{block}
 	target := "block"
@@ -84,6 +88,15 @@ func buildConfig(s State, probePort int, probeSecret string, metricsPort int) ([
 		}
 	}
 	rules := []any{map[string]any{"type": "field", "inboundTag": []string{"wireguard"}, "ip": blocked, "outboundTag": "block"}, map[string]any{"type": "field", "network": "tcp,udp", "outboundTag": target}}
+	if s.Settings.DNS.Enabled {
+		forwardPort, socksPort := 15353, 15354
+		if len(dnsPorts) == 2 {
+			forwardPort, socksPort = dnsPorts[0], dnsPorts[1]
+		}
+		inbounds = append(inbounds, map[string]any{"tag": "dns-upstream", "listen": "127.0.0.1", "port": socksPort, "protocol": "socks", "settings": map[string]any{"auth": "password", "accounts": []any{map[string]any{"user": "happy", "pass": probeSecret}}, "udp": true, "ip": "127.0.0.1"}})
+		outbounds = append(outbounds, map[string]any{"tag": "dns-local", "protocol": "freedom", "settings": map[string]any{"redirect": fmt.Sprintf("127.0.0.1:%d", forwardPort), "finalRules": []any{map[string]any{"action": "allow", "network": "tcp,udp", "ip": []string{"127.0.0.1/32"}, "port": fmt.Sprint(forwardPort)}}}})
+		rules = append([]any{map[string]any{"type": "field", "inboundTag": []string{"wireguard"}, "ip": []string{wireGuardDNS + "/32"}, "port": "53", "network": "tcp,udp", "outboundTag": "dns-local"}}, rules...)
+	}
 	config := map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": inbounds, "outbounds": outbounds, "routing": map[string]any{"domainStrategy": "AsIs", "rules": rules}}
 	if metricsPort > 0 {
 		config["metrics"] = map[string]any{"listen": fmt.Sprintf("127.0.0.1:%d", metricsPort)}
@@ -111,9 +124,20 @@ func (x *Xray) Apply(ctx context.Context, s State, forceClosed bool) error {
 		x.metricsPort = l.Addr().(*net.TCPAddr).Port
 		l.Close()
 	}
-	b, err := buildConfig(s, x.probePort, x.probeSecret, x.metricsPort)
+	if s.Settings.DNS.Enabled && x.dnsSocksPort == 0 {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		x.dnsSocksPort = l.Addr().(*net.TCPAddr).Port
+		l.Close()
+	}
+	b, err := buildConfig(s, x.probePort, x.probeSecret, x.metricsPort, x.dnsForwardPort, x.dnsSocksPort)
 	if err != nil {
 		return err
+	}
+	if x.running() && bytes.Equal(b, x.last) {
+		return nil
 	}
 	path := filepath.Join(x.dir, "xray.json")
 	pending := filepath.Join(x.dir, stagedConfigName)
@@ -145,6 +169,7 @@ func (x *Xray) Apply(ctx context.Context, s State, forceClosed bool) error {
 		return errors.New("не удалось запустить Xray; новая конфигурация не применена")
 	}
 	x.last = b
+	x.dnsActive = s.Settings.DNS.Enabled && !s.ExitDisabled && s.activeNode() != nil
 	return nil
 }
 
@@ -208,4 +233,14 @@ func (x *Xray) Probe(ctx context.Context) (time.Duration, error) {
 		return 0, errors.New("неожиданный ответ проверки HTTPS")
 	}
 	return time.Since(start), nil
+}
+
+func (x *Xray) setDNSForwardPort(port int) { x.mu.Lock(); defer x.mu.Unlock(); x.dnsForwardPort = port }
+func (x *Xray) dnsKey() string {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if !x.running() || !x.dnsActive {
+		return ""
+	}
+	return fmt.Sprint(x.generation)
 }

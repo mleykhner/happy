@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type Service struct {
 	fetcher           *http.Client
 	events            []Event
 	health            Health
+	dns               *DNSProxy
 }
 
 func NewService(store *Store, xray *Xray) (*Service, error) {
@@ -70,6 +72,10 @@ func NewService(store *Store, xray *Xray) (*Service, error) {
 
 	// Migrate existing installations once, preserving this identity thereafter.
 	changed := migrated
+	if state.Settings.DNS.Listen == "" {
+		state.Settings.DNS = defaultDNSSettings()
+		changed = true
+	}
 	if state.DeviceID == "" {
 		state.DeviceID = newDeviceID()
 		changed = true
@@ -94,7 +100,7 @@ func NewService(store *Store, xray *Xray) (*Service, error) {
 			return nil, err
 		}
 	}
-	return &Service{store: store, xray: xray, state: state, events: []Event{}, fetcher: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
+	return &Service{store: store, xray: xray, dns: newDNSProxy(xray.dnsDial, xray.dnsKey), state: state, events: []Event{}, fetcher: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("слишком много перенаправлений")
 		}
@@ -120,6 +126,19 @@ func cloneState(v State) State {
 }
 func (s *Service) commit(ctx context.Context, next State, forceClosed bool) error {
 	old := s.state
+	if err := s.dns.Apply(next.Settings.DNS); err != nil {
+		if !forceClosed {
+			return err
+		}
+		s.event(err.Error())
+	}
+	s.xray.setDNSForwardPort(s.dns.internalPort())
+	defer func() {
+		if err := s.dns.Apply(s.state.Settings.DNS); err != nil {
+			s.event("Не удалось восстановить DNS: " + err.Error())
+		}
+		s.xray.setDNSForwardPort(s.dns.internalPort())
+	}()
 	if forceClosed {
 		if err := s.store.latchClose(); err != nil {
 			s.xray.Stop()
@@ -166,6 +185,10 @@ func (s *Service) commit(ctx context.Context, next State, forceClosed bool) erro
 }
 func (s *Service) Start(ctx context.Context) {
 	s.mu.Lock()
+	if err := s.dns.Apply(s.state.Settings.DNS); err != nil {
+		s.event(err.Error())
+	}
+	s.xray.setDNSForwardPort(s.dns.internalPort())
 	if err := s.xray.Apply(ctx, s.state, true); err != nil {
 		s.event(err.Error())
 	}
@@ -178,6 +201,7 @@ func (s *Service) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
+				s.dns.Close()
 				return
 			case <-refresh.C:
 				s.refreshDue(ctx)
@@ -331,6 +355,23 @@ func (s *Service) SetConnection(ctx context.Context, enabled bool) error {
 	return s.commit(ctx, next, !enabled)
 }
 func (s *Service) Configure(ctx context.Context, v Settings) error {
+	if reflect.DeepEqual(v.DNS, DNSSettings{}) {
+		v.DNS = defaultDNSSettings()
+	}
+	v.DNS.Listen = strings.TrimSpace(v.DNS.Listen)
+	clean := []string{}
+	for _, raw := range v.DNS.AllowedNetworks {
+		if n := strings.TrimSpace(raw); n != "" {
+			clean = append(clean, n)
+		}
+	}
+	v.DNS.AllowedNetworks = clean
+	if err := v.DNS.validate(); err != nil {
+		return err
+	}
+	if v.DNS.Enabled && v.DNS.Port == v.WireGuardPort {
+		return errors.New("DNS и WireGuard должны использовать разные UDP-порты")
+	}
 	if err := v.validate(); err != nil {
 		return err
 	}
@@ -433,10 +474,12 @@ func (s *Service) View() map[string]any {
 		clients = append(clients, map[string]any{"id": c.ID, "name": c.Name, "enabled": c.Enabled, "publicKey": c.PublicKey, "address": fmt.Sprintf("10.77.0.%d", c.Address)})
 		enabled = enabled || c.Enabled
 	}
-	return map[string]any{"deviceId": s.state.DeviceID, "settings": s.state.Settings, "subscriptions": subs, "selected": s.state.Selected, "clients": clients, "running": s.xray.Running(), "exitDisabled": s.state.ExitDisabled, "blocked": s.state.ExitDisabled || s.state.activeNode() == nil || !s.xray.Running() || !enabled, "health": s.health, "events": append([]Event{}, s.events...)}
+	return map[string]any{"dns": s.dns.Status(), "deviceId": s.state.DeviceID, "settings": s.state.Settings, "subscriptions": subs, "selected": s.state.Selected, "clients": clients, "running": s.xray.Running(), "exitDisabled": s.state.ExitDisabled, "blocked": s.state.ExitDisabled || s.state.activeNode() == nil || !s.xray.Running() || !enabled, "health": s.health, "events": append([]Event{}, s.events...)}
 }
 func (s *Service) ClientConfig(ids ...string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.state.clientConfig(ids...)
 }
+
+func (s *Service) Close() { s.dns.Close() }

@@ -6,6 +6,9 @@ services:
     ports:
       - "127.0.0.1:8080:8080/tcp"
       - "51820:51820/udp"
+      # Uncomment after enabling DNS in the panel (match its configured port).
+      # - "53:53/udp"
+      # - "53:53/tcp"
     volumes:
       - happy-data:/data
     environment:
@@ -15,6 +18,9 @@ services:
       # HAPPY_SECURE_COOKIE: "true"
     secrets:
       - admin_password
+    # Allow the nonroot process to bind port 53 inside this network namespace.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true

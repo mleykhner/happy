@@ -47,6 +47,7 @@ exec sleep 600
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(s.Close)
 	return s, dir
 }
 func selectedState(t *testing.T) State {

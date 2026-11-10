@@ -105,6 +105,7 @@ func TestWireGuardThroughProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer service.Close()
 	if err = service.Configure(t.Context(), gateway.Settings{Endpoint: "127.0.0.1", WireGuardPort: wgPort, RefreshMinutes: 60}); err != nil {
 		t.Fatal(err)
 	}

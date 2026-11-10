@@ -32,7 +32,7 @@ COPY --from=xray /out/xray /usr/local/bin/xray
 COPY --from=xray /out/XRAY-LICENSE /usr/share/doc/happy/XRAY-LICENSE
 USER 10001:10001
 ENV HAPPY_DATA_DIR=/data HAPPY_LISTEN=0.0.0.0:8080
-EXPOSE 8080/tcp 51820/udp
+EXPOSE 8080/tcp 51820/udp 53/tcp 53/udp
 VOLUME /data
 ENTRYPOINT ["/usr/local/bin/happy"]
 CMD ["serve"]

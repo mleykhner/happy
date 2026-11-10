@@ -10,6 +10,7 @@ in {
     passwordFile = mkOption { type = types.str; description = "Absolute runtime path to an admin password, outside the Nix store"; };
     domain = mkOption { type = types.nullOr types.str; default = null; description = "Optional nginx HTTPS domain"; };
     openFirewall = mkOption { type = types.bool; default = false; };
+    dnsPorts = mkOption { type = types.listOf types.port; default = []; description = "DNS firewall ports (UDP and TCP); match the port set in the panel"; };
     wireGuardPort = mkOption { type = types.port; default = 51820; description = "Firewall port; match the port set in the panel"; };
   };
   config = mkIf cfg.enable {
@@ -48,10 +49,12 @@ in {
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         RestrictSUIDSGID = true;
-        CapabilityBoundingSet = "";
+        CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
+        AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
       };
     };
-    networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [ cfg.wireGuardPort ];
+    networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall ([ cfg.wireGuardPort ] ++ cfg.dnsPorts);
+    networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall cfg.dnsPorts;
     services.nginx = mkIf (cfg.domain != null) {
       enable = true;
       virtualHosts.${cfg.domain} = {

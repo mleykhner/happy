@@ -1,3 +1,4 @@
+import { DNSSettingsForm, type DNSSettings, type DNSStatus } from "./dns-settings";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "./button";
@@ -69,6 +70,7 @@ type Subscription = {
   error: string;
 };
 type Settings = {
+ dns: DNSSettings;
   endpoint: string;
   wireguardPort: number;
   refreshMinutes: number;
@@ -80,6 +82,7 @@ type Health = {
   error: string;
 };
 type State = {
+ dns: DNSStatus;
   deviceId: string;
   settings: Settings;
   subscriptions: Subscription[];
@@ -798,7 +801,6 @@ function App() {
                 <label>
                   Внешний IP или домен сервера
                   <input
-                    required
                     value={settings.endpoint}
                     onChange={(e) =>
                       setSettings({ ...settings, endpoint: e.target.value })
@@ -845,6 +847,7 @@ function App() {
                     }
                   />
                 </label>
+                <DNSSettingsForm value={settings.dns} onChange={dns => setSettings({ ...settings, dns })} status={state.dns} check={(upstream, direct) => api<{ latencyMs: number }>("/dns/check", "POST", { upstream, direct })} />
                 <Button type="submit" disabled={busy}>
                   Сохранить настройки
                 </Button>

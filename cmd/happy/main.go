@@ -112,6 +112,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	defer service.Close()
 	service.Start(ctx)
 	server := &http.Server{Addr: env("HAPPY_LISTEN", "127.0.0.1:8080"), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 40 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	go func() {

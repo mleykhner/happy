@@ -41,9 +41,10 @@ type Client struct {
 	Enabled    bool   `json:"enabled"`
 }
 type Settings struct {
-	Endpoint       string `json:"endpoint"`
-	WireGuardPort  int    `json:"wireguardPort"`
-	RefreshMinutes int    `json:"refreshMinutes"`
+	Endpoint       string      `json:"endpoint"`
+	WireGuardPort  int         `json:"wireguardPort"`
+	RefreshMinutes int         `json:"refreshMinutes"`
+	DNS            DNSSettings `json:"dns"`
 }
 type State struct {
 	ExitDisabled  bool           `json:"exitDisabled"`
@@ -59,7 +60,7 @@ type State struct {
 
 func initialState() (State, error) {
 	priv, pub, err := keyPair()
-	return State{DeviceID: newDeviceID(), Settings: Settings{WireGuardPort: 51820, RefreshMinutes: 60}, Subscriptions: []Subscription{}, ServerPrivate: priv, ServerPublic: pub}, err
+	return State{DeviceID: newDeviceID(), Settings: Settings{WireGuardPort: 51820, RefreshMinutes: 60, DNS: defaultDNSSettings()}, Subscriptions: []Subscription{}, ServerPrivate: priv, ServerPublic: pub}, err
 }
 func keyPair() (string, string, error) {
 	k, err := ecdh.X25519().GenerateKey(rand.Reader)
@@ -128,7 +129,7 @@ func (s State) clientConfig(ids ...string) (string, error) {
 	if s.Settings.Endpoint == "" {
 		return "", errors.New("укажите внешний адрес сервера в настройках")
 	}
-	return fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.77.0.%d/32, fd77::%x/128\nDNS = 1.1.1.1\nMTU = 1280\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n", client.PrivateKey, client.Address, client.Address, s.ServerPublic, net.JoinHostPort(s.Settings.Endpoint, strconv.Itoa(s.Settings.WireGuardPort))), nil
+	return fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.77.0.%d/32, fd77::%x/128\n%sMTU = 1280\n\n[Peer]\nPublicKey = %s\nEndpoint = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n", client.PrivateKey, client.Address, client.Address, s.Settings.DNS.wireGuardLine(), s.ServerPublic, net.JoinHostPort(s.Settings.Endpoint, strconv.Itoa(s.Settings.WireGuardPort))), nil
 }
 
 // Use an installation identity rather than exposing host hardware identifiers.

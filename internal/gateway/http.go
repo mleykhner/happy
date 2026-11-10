@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/miekg/dns"
 	"io"
 	"io/fs"
 	"net"
@@ -92,6 +94,37 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 			return
 		}
 		a.result(w, s.Select(r.Context(), v.ID))
+	}))
+	mux.HandleFunc("POST /api/dns/check", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		var v struct {
+			Upstream DNSUpstream `json:"upstream"`
+			Direct   bool        `json:"direct"`
+		}
+		if !decode(w, r, &v) {
+			return
+		}
+		if err := v.Upstream.validate(); err != nil {
+			a.result(w, err)
+			return
+		}
+		dial := s.xray.dnsDial
+		if v.Direct {
+			dial = hostDNSDial
+		} else if s.xray.dnsKey() == "" {
+			apiError(w, 400, "Сначала включите DNS-прокси и подключите Xray")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		q := new(dns.Msg)
+		q.SetQuestion("example.com.", dns.TypeA)
+		start := time.Now()
+		_, err := exchangeDNS(ctx, v.Upstream, q, dial)
+		if err != nil {
+			apiError(w, 400, "DNS не отвечает: проверьте адрес, TLS и соединение")
+			return
+		}
+		respond(w, 200, map[string]any{"latencyMs": time.Since(start).Milliseconds()})
 	}))
 	mux.HandleFunc("PUT /api/settings", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		var v Settings
