@@ -23,13 +23,14 @@ type Node struct {
 	Outbound map[string]any `json:"outbound"`
 }
 type Subscription struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	URL       string    `json:"url"`
-	Nodes     []Node    `json:"nodes"`
-	Updated   time.Time `json:"updated"`
-	Attempted time.Time `json:"attempted"`
-	Error     string    `json:"error"`
+	Metadata  SubscriptionMetadata `json:"metadata"`
+	ID        string               `json:"id"`
+	Name      string               `json:"name"`
+	URL       string               `json:"url"`
+	Nodes     []Node               `json:"nodes"`
+	Updated   time.Time            `json:"updated"`
+	Attempted time.Time            `json:"attempted"`
+	Error     string               `json:"error"`
 }
 type Client struct {
 	PrivateKey string `json:"privateKey"`
@@ -42,6 +43,7 @@ type Settings struct {
 	RefreshMinutes int    `json:"refreshMinutes"`
 }
 type State struct {
+	ExitDisabled  bool           `json:"exitDisabled"`
 	DeviceID      string         `json:"deviceId"`
 	Settings      Settings       `json:"settings"`
 	Subscriptions []Subscription `json:"subscriptions"`

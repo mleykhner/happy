@@ -48,7 +48,7 @@ func BuildConfig(s State, probePort int, probeSecret string) ([]byte, error) {
 	block := map[string]any{"tag": "block", "protocol": "blackhole", "settings": map[string]any{}}
 	outbounds := []any{block}
 	target := "block"
-	if n := s.activeNode(); n != nil {
+	if n := s.activeNode(); n != nil && !s.ExitDisabled {
 		outbounds = append(outbounds, n.Outbound)
 		target = "proxy"
 	}

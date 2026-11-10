@@ -50,6 +50,16 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 	a := &API{service: s, hash: hash, origin: origin, secure: secure, sessions: map[string]session{}, limits: map[string]loginLimit{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/login", a.login)
+	mux.HandleFunc("PUT /api/password", a.auth(a.changePassword))
+	mux.HandleFunc("POST /api/connection", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		var v struct {
+			Enabled bool `json:"enabled"`
+		}
+		if !decode(w, r, &v) {
+			return
+		}
+		a.result(w, s.SetConnection(r.Context(), v.Enabled))
+	}))
 	mux.HandleFunc("POST /api/logout", a.auth(func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		if c, e := r.Cookie("happy_session"); e == nil {
@@ -201,12 +211,13 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &v) {
 		return
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if len(v.Password) > 72 || bcrypt.CompareHashAndPassword(a.hash, []byte(v.Password)) != nil {
 		apiError(w, 401, "неверный пароль")
 		return
 	}
 	token := randomToken()
-	a.mu.Lock()
 	for k, v := range a.sessions {
 		if now.After(v.expires) {
 			delete(a.sessions, k)
@@ -217,10 +228,48 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	}
 	a.sessions[tokenHash(token)] = session{now.Add(12 * time.Hour)}
 	delete(a.limits, host)
-	a.mu.Unlock()
 	http.SetCookie(w, a.cookie(token, 43200))
 	respond(w, 200, map[string]bool{"ok": true})
 }
+func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
+	var v struct {
+		Current string `json:"currentPassword"`
+		New     string `json:"newPassword"`
+	}
+	if !decode(w, r, &v) {
+		return
+	}
+	if len(v.New) < 12 || len(v.New) > 72 {
+		apiError(w, 400, "пароль должен содержать от 12 до 72 байт")
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	c, _ := r.Cookie("happy_session")
+	current, ok := a.sessions[tokenHash(c.Value)]
+	if !ok || time.Now().After(current.expires) {
+		apiError(w, 401, "сессия истекла")
+		return
+	}
+	if len(v.Current) > 72 || bcrypt.CompareHashAndPassword(a.hash, []byte(v.Current)) != nil {
+		apiError(w, 400, "неверный текущий пароль")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(v.New), 12)
+	if err != nil {
+		apiError(w, 500, "не удалось изменить пароль")
+		return
+	}
+	if err = a.service.store.SetPassword(hash); err != nil {
+		apiError(w, 500, "не удалось сохранить пароль")
+		return
+	}
+	a.hash = hash
+	clear(a.sessions)
+	a.sessions[tokenHash(c.Value)] = current
+	respond(w, 200, map[string]bool{"ok": true})
+}
+
 func (a *API) result(w http.ResponseWriter, err error) {
 	if err != nil {
 		apiError(w, 400, err.Error())

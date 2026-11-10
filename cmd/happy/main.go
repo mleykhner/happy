@@ -81,7 +81,7 @@ func run() error {
 	}
 	defer store.Close()
 	if file := os.Getenv("HAPPY_PASSWORD_FILE"); file != "" {
-		// Explicitly configured file is authoritative on each start; never stored in the Nix store.
+		// Bootstrap only; preserve subsequent password changes made through the UI.
 		b, e := os.ReadFile(file)
 		if e != nil {
 			return errors.New("не удалось прочитать HAPPY_PASSWORD_FILE")
@@ -94,7 +94,7 @@ func run() error {
 		if e != nil {
 			return e
 		}
-		if e = store.SetPassword(hash); e != nil {
+		if e = store.InitializePassword(hash); e != nil {
 			return e
 		}
 	}

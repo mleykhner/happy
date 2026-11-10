@@ -237,7 +237,7 @@ func (s *Service) Refresh(ctx context.Context, id string) error {
 	if raw == "" {
 		return errors.New("подписка не найдена")
 	}
-	nodes, fetchErr := fetchSubscription(ctx, s.fetcher, raw, deviceID)
+	nodes, metadata, fetchErr := fetchSubscription(ctx, s.fetcher, raw, deviceID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := cloneState(s.state)
@@ -262,6 +262,7 @@ func (s *Service) Refresh(ctx context.Context, id string) error {
 		return fetchErr
 	}
 	sub.Nodes = nodes
+	sub.Metadata = metadata
 	sub.Updated = time.Now()
 	sub.Error = ""
 	missing := s.state.activeNode() != nil && next.activeNode() == nil
@@ -304,6 +305,16 @@ func (s *Service) Select(ctx context.Context, id string) error {
 		return errors.New("узел не найден")
 	}
 	return s.commit(ctx, next, id == "")
+}
+func (s *Service) SetConnection(ctx context.Context, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneState(s.state)
+	if enabled && next.activeNode() == nil {
+		return errors.New("выберите сервер из подписки")
+	}
+	next.ExitDisabled = !enabled
+	return s.commit(ctx, next, !enabled)
 }
 func (s *Service) Configure(ctx context.Context, v Settings) error {
 	if err := v.validate(); err != nil {
@@ -364,13 +375,13 @@ func (s *Service) View() map[string]any {
 		for _, n := range sub.Nodes {
 			nodes = append(nodes, map[string]any{"id": n.ID, "name": n.Name, "protocol": n.Protocol, "host": n.Host, "port": n.Port})
 		}
-		subs = append(subs, map[string]any{"id": sub.ID, "name": sub.Name, "nodes": nodes, "updated": sub.Updated, "error": sub.Error})
+		subs = append(subs, map[string]any{"id": sub.ID, "name": sub.Name, "nodes": nodes, "updated": sub.Updated, "error": sub.Error, "metadata": sub.Metadata})
 	}
 	var client any
 	if s.state.Client != nil {
 		client = map[string]any{"enabled": s.state.Client.Enabled, "publicKey": s.state.Client.PublicKey}
 	}
-	return map[string]any{"deviceId": s.state.DeviceID, "settings": s.state.Settings, "subscriptions": subs, "selected": s.state.Selected, "client": client, "running": s.xray.Running(), "blocked": s.state.activeNode() == nil || !s.xray.Running() || s.state.Client == nil || !s.state.Client.Enabled, "health": s.health, "events": append([]Event{}, s.events...)}
+	return map[string]any{"deviceId": s.state.DeviceID, "settings": s.state.Settings, "subscriptions": subs, "selected": s.state.Selected, "client": client, "running": s.xray.Running(), "exitDisabled": s.state.ExitDisabled, "blocked": s.state.ExitDisabled || s.state.activeNode() == nil || !s.xray.Running() || s.state.Client == nil || !s.state.Client.Enabled, "health": s.health, "events": append([]Event{}, s.events...)}
 }
 func (s *Service) ClientConfig() (string, error) {
 	s.mu.Lock()

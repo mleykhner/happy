@@ -430,3 +430,132 @@ func TestLegacyStateGetsHWIDAndDiscardsOldNoticeNodes(t *testing.T) {
 		t.Fatal("migrated HWID changed")
 	}
 }
+
+func TestPasswordChangePersistsAndRevokesOtherSessions(t *testing.T) {
+	s, _ := fixture(t)
+	hash, err := bcrypt.GenerateFromPassword([]byte("old-password-for-test"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.SetPassword(hash); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := Handler(s, fstest.MapFS{}, "https://panel.example", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		method := "POST"
+		if path == "/api/password" {
+			method = "PUT"
+		}
+		if path == "/api/state" {
+			method = "GET"
+		}
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Origin", "https://panel.example")
+		if cookie != nil {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	login := func() *http.Cookie {
+		w := request("/api/login", `{"password":"old-password-for-test"}`, nil)
+		if w.Code != 200 {
+			t.Fatal(w.Code)
+		}
+		return w.Result().Cookies()[0]
+	}
+	first, second := login(), login()
+	for _, body := range []string{`{"currentPassword":"wrong","newPassword":"new-password-for-test"}`, `{"currentPassword":"old-password-for-test","newPassword":"short"}`} {
+		if w := request("/api/password", body, first); w.Code != 400 {
+			t.Fatal(w.Code)
+		}
+	}
+	if w := request("/api/password", `{"currentPassword":"old-password-for-test","newPassword":"new-password-for-test"}`, nil); w.Code != 401 {
+		t.Fatal(w.Code)
+	}
+	if w := request("/api/password", `{"currentPassword":"old-password-for-test","newPassword":"new-password-for-test"}`, first); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+	if w := request("/api/state", "", first); w.Code != 200 {
+		t.Fatal("current session revoked")
+	}
+	if w := request("/api/state", "", second); w.Code != 401 {
+		t.Fatal("other session survived")
+	}
+	if w := request("/api/login", `{"password":"old-password-for-test"}`, nil); w.Code != 401 {
+		t.Fatal("old password accepted")
+	}
+	if w := request("/api/login", `{"password":"new-password-for-test"}`, nil); w.Code != 200 {
+		t.Fatal("new password rejected")
+	}
+	if err := s.store.InitializePassword(hash); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := s.store.password()
+	if err != nil || bcrypt.CompareHashAndPassword(persisted, []byte("new-password-for-test")) != nil {
+		t.Fatal("bootstrap overwrote changed password")
+	}
+	restarted, err := Handler(s, fstest.MapFS{}, "https://panel.example", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"password":"new-password-for-test"}`))
+	r.Header.Set("Origin", "https://panel.example")
+	w := httptest.NewRecorder()
+	restarted.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatal("password did not survive restart")
+	}
+}
+
+func TestConnectionTogglePreservesServerAndBlocksAfterRestart(t *testing.T) {
+	s, _ := fixture(t)
+	s.state = selectedState(t)
+	selected := s.state.Selected
+	if err := s.SetConnection(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	if s.state.Selected != selected || !s.state.ExitDisabled {
+		t.Fatal("disconnect lost server selection")
+	}
+	restored, err := s.store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := BuildConfig(restored, 18080, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		Outbounds []struct {
+			Protocol string `json:"protocol"`
+		}
+		Routing struct {
+			Rules []struct {
+				OutboundTag string `json:"outboundTag"`
+			}
+		}
+	}
+	if err := json.Unmarshal(config, &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Outbounds) != 1 || v.Outbounds[0].Protocol != "blackhole" || v.Routing.Rules[len(v.Routing.Rules)-1].OutboundTag != "block" {
+		t.Fatal("disconnected gateway permits exit")
+	}
+	if err := s.SetConnection(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if s.state.ExitDisabled || s.state.Selected != selected {
+		t.Fatal("reconnect failed")
+	}
+	if err := s.Select(t.Context(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetConnection(t.Context(), true); err == nil {
+		t.Fatal("connected without subscription node")
+	}
+}

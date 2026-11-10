@@ -72,6 +72,12 @@ func (s *Store) SetPassword(hash []byte) error {
 	_, err := s.db.Exec("INSERT INTO admin(id,hash) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash", hash)
 	return err
 }
+
+// InitializePassword never overwrites a password changed through the UI.
+func (s *Store) InitializePassword(hash []byte) error {
+	_, err := s.db.Exec("INSERT INTO admin(id,hash) VALUES(1,?) ON CONFLICT(id) DO NOTHING", hash)
+	return err
+}
 func (s *Store) password() ([]byte, error) {
 	var b []byte
 	err := s.db.QueryRow("SELECT hash FROM admin WHERE id=1").Scan(&b)

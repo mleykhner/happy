@@ -37,13 +37,13 @@ func validateURL(raw string) error {
 	}
 	return nil
 }
-func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string) ([]Node, error) {
+func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string) ([]Node, SubscriptionMetadata, error) {
 	if err := validateURL(raw); err != nil {
-		return nil, err
+		return nil, SubscriptionMetadata{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return nil, errors.New("не удалось создать запрос")
+		return nil, SubscriptionMetadata{}, errors.New("не удалось создать запрос")
 	}
 	req.Header.Set("User-Agent", "Happy/0.1")
 	req.Header.Set("Accept", "text/plain")
@@ -53,29 +53,33 @@ func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string
 	req.Header.Set("X-App-Version", "0.1.0")
 	resp, err := c.Do(req)
 	if err != nil {
-		return nil, errors.New("не удалось загрузить подписку: проверьте адрес и соединение")
+		return nil, SubscriptionMetadata{}, errors.New("не удалось загрузить подписку: проверьте адрес и соединение")
 	}
 	defer resp.Body.Close()
 	if headerEnabled(resp.Header.Get("X-Hwid-Max-Devices-Reached")) {
-		return nil, errors.New("достигнут лимит устройств подписки; удалите неиспользуемое устройство в кабинете провайдера")
+		return nil, SubscriptionMetadata{}, errors.New("достигнут лимит устройств подписки; удалите неиспользуемое устройство в кабинете провайдера")
 	}
 	if headerEnabled(resp.Header.Get("X-Hwid-Not-Supported")) {
-		return nil, errors.New("провайдер не принял HWID шлюза; проверьте поддержку Happy у провайдера")
+		return nil, SubscriptionMetadata{}, errors.New("провайдер не принял HWID шлюза; проверьте поддержку Happy у провайдера")
 	}
 	if resp.StatusCode == http.StatusNotFound && headerEnabled(resp.Header.Get("X-Hwid-Active")) {
-		return nil, errors.New("провайдер отказал HWID шлюза; проверьте доступ устройства в кабинете провайдера")
+		return nil, SubscriptionMetadata{}, errors.New("провайдер отказал HWID шлюза; проверьте доступ устройства в кабинете провайдера")
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("провайдер ответил HTTP %d", resp.StatusCode)
+		return nil, SubscriptionMetadata{}, fmt.Errorf("провайдер ответил HTTP %d", resp.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxSubscription+1))
 	if err != nil {
-		return nil, errors.New("ошибка чтения подписки")
+		return nil, SubscriptionMetadata{}, errors.New("ошибка чтения подписки")
 	}
 	if len(b) > maxSubscription {
-		return nil, errors.New("подписка превышает 4 МиБ")
+		return nil, SubscriptionMetadata{}, errors.New("подписка превышает 4 МиБ")
 	}
-	return ParseSubscription(string(b))
+	nodes, err := ParseSubscription(string(b))
+	if err != nil {
+		return nil, SubscriptionMetadata{}, err
+	}
+	return nodes, subscriptionMetadata(resp.Header, string(b)), nil
 }
 func ParseSubscription(body string) ([]Node, error) {
 	body = strings.TrimSpace(strings.TrimPrefix(body, "\ufeff"))

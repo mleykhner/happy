@@ -10,7 +10,20 @@ type Node = {
   host: string;
   port: number;
 };
+type SubscriptionMetadata = {
+  title?: string;
+  description?: string;
+  announcement?: string;
+  website?: string;
+  support?: string;
+  announcementUrl?: string;
+  upload?: number;
+  download?: number;
+  total?: number;
+  expire?: number;
+};
 type Subscription = {
+  metadata?: SubscriptionMetadata;
   id: string;
   name: string;
   nodes: Node[];
@@ -35,6 +48,7 @@ type State = {
   selected: string;
   client: null | { enabled: boolean; publicKey: string };
   running: boolean;
+  exitDisabled: boolean;
   blocked: boolean;
   health: Health;
   events: { time: string; message: string }[];
@@ -61,11 +75,117 @@ function date(raw: string) {
     ? "Ещё не обновлялась"
     : new Date(raw).toLocaleString("ru-RU");
 }
+function bytes(value: number) {
+  const units = ["Б", "КиБ", "МиБ", "ГиБ", "ТиБ", "ПиБ"];
+  const unit =
+    value > 0
+      ? Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+      : 0;
+  return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value / 1024 ** unit)} ${units[unit]}`;
+}
+function ProviderInfo({ subscription }: { subscription: Subscription }) {
+  const m = subscription.metadata;
+  if (!m || Object.keys(m).length === 0)
+    return <p className="muted">Провайдер не передал сведения о подписке.</p>;
+  const used =
+    m.upload !== undefined && m.download !== undefined
+      ? m.upload + m.download
+      : undefined;
+  const expired =
+    m.expire !== undefined && m.expire > 0 && m.expire * 1000 < Date.now();
+  const exhausted =
+    m.total !== undefined &&
+    m.total > 0 &&
+    used !== undefined &&
+    used >= m.total;
+  return (
+    <div className="provider-info">
+      {m.title && <h3>{m.title}</h3>}
+      {m.description && <p className="provider-text">{m.description}</p>}
+      <div className="provider-stats">
+        {(m.upload !== undefined ||
+          m.download !== undefined ||
+          m.total !== undefined) && (
+          <div>
+            <p className="eyebrow">ТРАФИК ПРОВАЙДЕРА</p>
+            <strong>
+              {used !== undefined ? bytes(used) : "Расход не указан"}
+              {m.total !== undefined
+                ? m.total === 0
+                  ? " · без лимита"
+                  : ` / ${bytes(m.total)}`
+                : " · лимит не указан"}
+            </strong>
+            {used !== undefined && m.total !== undefined && m.total > 0 && (
+              <>
+                <progress
+                  aria-label="Использованный трафик"
+                  value={Math.min(used, m.total)}
+                  max={m.total}
+                />
+                <small>
+                  {exhausted
+                    ? "Лимит исчерпан"
+                    : `Осталось ${bytes(Math.max(0, m.total - used))}`}
+                </small>
+              </>
+            )}
+            <p className="muted">
+              ↑ {m.upload !== undefined ? bytes(m.upload) : "Нет данных"} · ↓{" "}
+              {m.download !== undefined ? bytes(m.download) : "Нет данных"}
+            </p>
+          </div>
+        )}
+        {m.expire !== undefined && (
+          <div>
+            <p className="eyebrow">ДЕЙСТВУЕТ ДО</p>
+            <strong>
+              {m.expire === 0
+                ? "Без срока окончания"
+                : date(new Date(m.expire * 1000).toISOString())}
+            </strong>
+            {expired && <p className="alert">Срок подписки истёк</p>}
+          </div>
+        )}
+      </div>
+      {m.announcement && (
+        <div className="notice provider-text">{m.announcement}</div>
+      )}
+      <div className="actions provider-links">
+        {(
+          [
+            [m.website, "Сайт провайдера ↗"],
+            [m.support, "Поддержка ↗"],
+            [m.announcementUrl, "Подробнее об объявлении ↗"],
+          ] as const
+        ).map(
+          ([href, label]) =>
+            href && (
+              <a
+                key={label}
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {label}
+              </a>
+            ),
+        )}
+      </div>
+      <small className="muted">
+        Данные провайдера на {date(subscription.updated)}.
+      </small>
+    </div>
+  );
+}
 function App() {
   const [state, setState] = useState<State | null>(null);
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [tab, setTab] = useState("overview");
   const [password, setPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
@@ -124,6 +244,9 @@ function App() {
       sub.nodes.map((n) => ({ ...n, subscription: sub.name })),
     ) ?? [];
   const selected = nodes.find((n) => n.id === state?.selected);
+  const selectedSubscription = state?.subscriptions.find((sub) =>
+    sub.nodes.some((n) => n.id === state.selected),
+  );
   const tabs = [
     ["overview", "Обзор"],
     ["subscriptions", "Подписки"],
@@ -210,6 +333,9 @@ function App() {
                 setQR(false);
                 setNotice("");
                 setError("");
+                setCurrentPassword("");
+                setNewPassword("");
+                setConfirmPassword("");
                 if (id === "settings") setSettings({ ...state.settings });
               }}
               className={tab === id ? "active" : ""}
@@ -268,30 +394,140 @@ function App() {
         )}
         {tab === "overview" && (
           <>
-            <section className="hero">
-              <div>
-                <span className="pill">WIREGUARD → XRAY</span>
-                <h2>{state.blocked ? "Выход закрыт." : "Маршрут настроен."}</h2>
-                <p>
-                  {state.blocked
-                    ? "Создайте подключение и выберите узел из подписки. Прямой выход в интернет заблокирован."
-                    : "Клиентский трафик направляется через выбранный узел. Доступность проверяется отдельно."}
-                </p>
-                <Button
-                  disabled={busy}
-                  onClick={() =>
-                    action(() => api("/probe", "POST"), "Проверка завершена")
-                  }
-                >
-                  {busy ? "Проверяем…" : "Проверить соединение ↗"}
-                </Button>
+            <section className="card connection-card">
+              <p className="eyebrow">WIREGUARD → XRAY</p>
+              <button
+                className={`connection-toggle ${!state.exitDisabled && selected && state.running ? "connected" : ""}`}
+                disabled={busy || !selected}
+                aria-pressed={
+                  !state.exitDisabled && !!selected && state.running
+                }
+                onClick={() =>
+                  action(
+                    () =>
+                      api("/connection", "POST", {
+                        enabled: state.exitDisabled || !state.running,
+                      }),
+                    state.exitDisabled || !state.running
+                      ? "Выход включён"
+                      : "Выход отключён",
+                  )
+                }
+              >
+                <span className="power-icon" aria-hidden="true">
+                  ⏻
+                </span>
+                <strong>
+                  {busy
+                    ? "Применяем…"
+                    : state.exitDisabled
+                      ? "Подключить"
+                      : selected && state.running
+                        ? "Отключить"
+                        : "Подключить"}
+                </strong>
+                <span>
+                  {state.exitDisabled
+                    ? "Отключено"
+                    : !selected
+                      ? "Выберите сервер"
+                      : !state.running
+                        ? "Xray остановлен"
+                        : "Выход включён"}
+                </span>
+              </button>
+              <h2>{selected?.name || "Сервер не выбран"}</h2>
+              <p className="muted">
+                {selected
+                  ? `${selected.subscription} · ${selected.protocol.toUpperCase()} · ${selected.host}:${selected.port}`
+                  : "Добавьте подписку и выберите сервер в списке ниже."}
+              </p>
+              <p className="muted">
+                {state.blocked
+                  ? "Клиентский трафик заблокирован."
+                  : "Маршрут для WireGuard-клиента настроен."}{" "}
+                {!state.client
+                  ? "Создайте WireGuard-клиент в разделе «Подключение»."
+                  : !state.client.enabled
+                    ? "WireGuard-клиент отключён."
+                    : ""}
+              </p>
+              <Button
+                variant="outline"
+                disabled={
+                  busy || state.exitDisabled || !selected || !state.running
+                }
+                onClick={() =>
+                  action(() => api("/probe", "POST"), "Проверка завершена")
+                }
+              >
+                Проверить доступность
+              </Button>
+            </section>
+            {selectedSubscription && (
+              <section className="card">
+                <h2>Подписка · {selectedSubscription.name}</h2>
+                <ProviderInfo subscription={selectedSubscription} />
+                {selectedSubscription.error && (
+                  <p className="alert">
+                    Обновление не удалось; показаны последние сохранённые
+                    данные.
+                  </p>
+                )}
+              </section>
+            )}
+            <section className="card">
+              <div className="section-title">
+                <h2>
+                  Все серверы <span className="count">{nodes.length}</span>
+                </h2>
               </div>
-              <div className="route-art" aria-hidden="true">
-                <div className="orbit orbit-1" />
-                <div className="orbit orbit-2" />
-                <div className="orbit orbit-3" />
-                <div className="route-core">h.</div>
-                <span className="route-dot" />
+              <input
+                aria-label="Поиск узлов"
+                placeholder="Поиск по названию или провайдеру…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              <div className="nodes">
+                {nodes
+                  .filter((n) =>
+                    `${n.name} ${n.subscription}`
+                      .toLowerCase()
+                      .includes(query.toLowerCase()),
+                  )
+                  .map((n) => (
+                    <div
+                      className={`node ${n.id === state.selected ? "selected" : ""}`}
+                      key={`${n.subscription}-${n.id}`}
+                    >
+                      <div>
+                        <h3>{n.name}</h3>
+                        <p>
+                          {n.subscription} · {n.protocol.toUpperCase()} ·{" "}
+                          {n.host}:{n.port}
+                        </p>
+                      </div>
+                      <Button
+                        variant={
+                          n.id === state.selected ? "default" : "outline"
+                        }
+                        disabled={busy || n.id === state.selected}
+                        onClick={() =>
+                          action(
+                            () => api("/select", "POST", { id: n.id }),
+                            "Единый выход изменён",
+                          )
+                        }
+                      >
+                        {n.id === state.selected ? "Выбран ✓" : "Выбрать"}
+                      </Button>
+                    </div>
+                  ))}
+                {nodes.length === 0 && (
+                  <p className="empty">
+                    Здесь появятся узлы после обновления подписки.
+                  </p>
+                )}
               </div>
             </section>
             <div className="stats">
@@ -438,77 +674,14 @@ function App() {
                     </Button>
                   </div>
                 </div>
-                {sub.error && <p className="alert">{sub.error}</p>}
-              </section>
-            ))}
-            <section className="card">
-              <div className="section-title">
-                <h2>
-                  Узлы провайдеров <span className="count">{nodes.length}</span>
-                </h2>
-                {state.selected && (
-                  <Button
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() =>
-                      action(
-                        () => api("/select", "POST", { id: "" }),
-                        "Выход заблокирован",
-                      )
-                    }
-                  >
-                    Заблокировать выход
-                  </Button>
-                )}
-              </div>
-              <input
-                aria-label="Поиск узлов"
-                placeholder="Поиск по названию или провайдеру…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              <div className="nodes">
-                {nodes
-                  .filter((n) =>
-                    `${n.name} ${n.subscription}`
-                      .toLowerCase()
-                      .includes(query.toLowerCase()),
-                  )
-                  .map((n) => (
-                    <div
-                      className={`node ${n.id === state.selected ? "selected" : ""}`}
-                      key={`${n.subscription}-${n.id}`}
-                    >
-                      <div>
-                        <h3>{n.name}</h3>
-                        <p>
-                          {n.subscription} · {n.protocol.toUpperCase()} ·{" "}
-                          {n.host}:{n.port}
-                        </p>
-                      </div>
-                      <Button
-                        variant={
-                          n.id === state.selected ? "default" : "outline"
-                        }
-                        disabled={busy || n.id === state.selected}
-                        onClick={() =>
-                          action(
-                            () => api("/select", "POST", { id: n.id }),
-                            "Единый выход изменён",
-                          )
-                        }
-                      >
-                        {n.id === state.selected ? "Выбран ✓" : "Выбрать"}
-                      </Button>
-                    </div>
-                  ))}
-                {nodes.length === 0 && (
-                  <p className="empty">
-                    Здесь появятся узлы после обновления подписки.
+                <ProviderInfo subscription={sub} />
+                {sub.error && (
+                  <p className="alert">
+                    {sub.error} Показаны последние сохранённые данные.
                   </p>
                 )}
-              </div>
-            </section>
+              </section>
+            ))}
           </>
         )}
         {tab === "client" && (
@@ -617,78 +790,145 @@ function App() {
           </section>
         )}
         {tab === "settings" && settings && (
-          <section className="card">
-            <h2>Настройки шлюза</h2>
-            <label>
-              HWID шлюза
-              <input readOnly value={state.deviceId} />
-              <small>
-                Постоянный ID для привязки подписки у провайдера. Сохраняется
-                вместе с данными приложения.
-              </small>
-            </label>
-            <form
-              className="settings-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                action(() => api("/settings", "PUT", settings));
-              }}
-            >
+          <>
+            <section className="card">
+              <h2>Настройки шлюза</h2>
               <label>
-                Внешний IP или домен сервера
-                <input
-                  required
-                  value={settings.endpoint}
-                  onChange={(e) =>
-                    setSettings({ ...settings, endpoint: e.target.value })
-                  }
-                  placeholder="vpn.example.org"
-                />
+                HWID шлюза
+                <input readOnly value={state.deviceId} />
                 <small>
-                  Без схемы и порта. Этот адрес попадёт в конфиг клиента.
+                  Постоянный ID для привязки подписки у провайдера. Сохраняется
+                  вместе с данными приложения.
                 </small>
               </label>
-              <label>
-                UDP-порт WireGuard
-                <input
-                  type="number"
-                  min={1024}
-                  max={65535}
-                  required
-                  value={settings.wireguardPort}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      wireguardPort: Number(e.target.value),
-                    })
+              <form
+                className="settings-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  action(() => api("/settings", "PUT", settings));
+                }}
+              >
+                <label>
+                  Внешний IP или домен сервера
+                  <input
+                    required
+                    value={settings.endpoint}
+                    onChange={(e) =>
+                      setSettings({ ...settings, endpoint: e.target.value })
+                    }
+                    placeholder="vpn.example.org"
+                  />
+                  <small>
+                    Без схемы и порта. Этот адрес попадёт в конфиг клиента.
+                  </small>
+                </label>
+                <label>
+                  UDP-порт WireGuard
+                  <input
+                    type="number"
+                    min={1024}
+                    max={65535}
+                    required
+                    value={settings.wireguardPort}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        wireguardPort: Number(e.target.value),
+                      })
+                    }
+                  />
+                  <small>
+                    При изменении обновите публикацию порта Docker или firewall
+                    и конфиг клиента.
+                  </small>
+                </label>
+                <label>
+                  Обновление подписок, минут
+                  <input
+                    type="number"
+                    min={5}
+                    max={10080}
+                    required
+                    value={settings.refreshMinutes}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        refreshMinutes: Number(e.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <Button type="submit" disabled={busy}>
+                  Сохранить настройки
+                </Button>
+              </form>
+            </section>
+            <section className="card">
+              <h2>Пароль администратора</h2>
+              <p className="muted">
+                После смены пароля остальные сессии будут завершены.
+              </p>
+              <form
+                className="settings-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (newPassword !== confirmPassword) {
+                    setError("Новые пароли не совпадают");
+                    return;
                   }
-                />
-                <small>
-                  При изменении обновите публикацию порта Docker или firewall и
-                  конфиг клиента.
-                </small>
-              </label>
-              <label>
-                Обновление подписок, минут
-                <input
-                  type="number"
-                  min={5}
-                  max={10080}
-                  required
-                  value={settings.refreshMinutes}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      refreshMinutes: Number(e.target.value),
-                    })
-                  }
-                />
-              </label>
-              <Button type="submit" disabled={busy}>
-                Сохранить настройки
-              </Button>
-            </form>
-          </section>
+                  action(async () => {
+                    await api("/password", "PUT", {
+                      currentPassword,
+                      newPassword,
+                    });
+                    setCurrentPassword("");
+                    setNewPassword("");
+                    setConfirmPassword("");
+                  }, "Пароль изменён. Остальные сессии завершены.");
+                }}
+              >
+                <label>
+                  Текущий пароль
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                  />
+                </label>
+                <label>
+                  Новый пароль
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    required
+                    minLength={12}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                  />
+                  <small>
+                    От 12 до 72 байт; для кириллицы один символ занимает
+                    несколько байт.
+                  </small>
+                </label>
+                <label>
+                  Повторите новый пароль
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    required
+                    minLength={12}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                  />
+                </label>
+                <Button type="submit" disabled={busy}>
+                  Сменить пароль
+                </Button>
+              </form>
+            </section>
+          </>
         )}
         <footer>
           <span>happy / 0.1</span>
