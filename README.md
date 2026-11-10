@@ -31,11 +31,7 @@ sudo chown 10001:10001 secrets/admin-password
 docker compose up -d --build
 ```
 
-Панель: `http://127.0.0.1:8080`. Для удалённого сервера используйте SSH-туннель:
-
-```sh
-ssh -L 8080:127.0.0.1:8080 user@server
-```
+Панель локально: `http://127.0.0.1:8080`. Для прямого доступа по адресу `http://SERVER_IP:8080` измените публикацию порта в `compose.yaml` на `"8080:8080/tcp"` и откройте TCP 8080 в firewall сервера и у хостинга.
 
 Для доступа по HTTPS настройте reverse proxy, затем в `compose.yaml` задайте `HAPPY_ORIGIN=https://vpn.example.org` и `HAPPY_SECURE_COOKIE=true`. Backend не доверяет произвольным `X-Forwarded-*` заголовкам. При проксировании с другого контейнера поместите его в общую Docker-сеть и используйте `http://happy:8080` как upstream.
 
@@ -120,6 +116,21 @@ nix run .#happy -- version
   networking.firewall.allowedTCPPorts = [ 80 443 ];
 }
 ```
+
+Для прямого доступа к панели по IP вместо `domain` используйте:
+
+```nix
+services.happy-gateway = {
+  enable = true;
+  passwordFile = "/run/secrets/happy-admin-password";
+  listen = "0.0.0.0:8080";
+  openFirewall = true;
+  wireGuardPort = 51820;
+};
+networking.firewall.allowedTCPPorts = [ 8080 ];
+```
+
+Панель будет доступна по `http://SERVER_IP:8080`. При наличии внешнего firewall откройте там TCP 8080 и UDP 51820.
 
 `passwordFile` — строковый путь к runtime-секрету, например sops-nix/agenix; **не Nix path literal** и не `builtins.readFile`. Содержимое не должно попадать в Nix store. systemd передаёт пароль через `LoadCredential`. Состояние — `/var/lib/happy`; используется `DynamicUser`.
 
