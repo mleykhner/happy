@@ -25,6 +25,8 @@ type Xray struct {
 	cmd         *exec.Cmd
 	done        chan struct{}
 	last        []byte
+	metricsPort int
+	generation  uint64
 	probePort   int
 	probeSecret string
 }
@@ -45,6 +47,10 @@ func (x *Xray) running() bool {
 	}
 }
 func BuildConfig(s State, probePort int, probeSecret string) ([]byte, error) {
+	return buildConfig(s, probePort, probeSecret, 0)
+}
+
+func buildConfig(s State, probePort int, probeSecret string, metricsPort int) ([]byte, error) {
 	block := map[string]any{"tag": "block", "protocol": "blackhole", "settings": map[string]any{}}
 	outbounds := []any{block}
 	target := "block"
@@ -72,7 +78,13 @@ func BuildConfig(s State, probePort int, probeSecret string) ([]byte, error) {
 		}
 	}
 	rules := []any{map[string]any{"type": "field", "inboundTag": []string{"wireguard"}, "ip": blocked, "outboundTag": "block"}, map[string]any{"type": "field", "network": "tcp,udp", "outboundTag": target}}
-	return json.MarshalIndent(map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": inbounds, "outbounds": outbounds, "routing": map[string]any{"domainStrategy": "AsIs", "rules": rules}}, "", "  ")
+	config := map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": inbounds, "outbounds": outbounds, "routing": map[string]any{"domainStrategy": "AsIs", "rules": rules}}
+	if metricsPort > 0 {
+		config["metrics"] = map[string]any{"listen": fmt.Sprintf("127.0.0.1:%d", metricsPort)}
+		config["stats"] = map[string]any{}
+		config["policy"] = map[string]any{"system": map[string]any{"statsInboundUplink": true, "statsInboundDownlink": true}}
+	}
+	return json.MarshalIndent(config, "", "  ")
 }
 func (x *Xray) Apply(ctx context.Context, s State, forceClosed bool) error {
 	x.mu.Lock()
@@ -85,7 +97,15 @@ func (x *Xray) Apply(ctx context.Context, s State, forceClosed bool) error {
 		x.probePort = l.Addr().(*net.TCPAddr).Port
 		l.Close()
 	}
-	b, err := BuildConfig(s, x.probePort, x.probeSecret)
+	if x.metricsPort == 0 {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		x.metricsPort = l.Addr().(*net.TCPAddr).Port
+		l.Close()
+	}
+	b, err := buildConfig(s, x.probePort, x.probeSecret, x.metricsPort)
 	if err != nil {
 		return err
 	}
@@ -133,6 +153,7 @@ func (x *Xray) start(path string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	x.generation++
 	x.cmd = cmd
 	x.done = make(chan struct{})
 	done := x.done

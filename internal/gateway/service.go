@@ -22,14 +22,18 @@ type Health struct {
 	Error     string    `json:"error"`
 }
 type Service struct {
-	mu        sync.Mutex
-	refreshMu sync.Mutex
-	store     *Store
-	xray      *Xray
-	state     State
-	fetcher   *http.Client
-	events    []Event
-	health    Health
+	mu                sync.Mutex
+	refreshMu         sync.Mutex
+	pingMu            sync.Mutex
+	monitorMu         sync.Mutex
+	traffic           Traffic
+	trafficGeneration uint64
+	store             *Store
+	xray              *Xray
+	state             State
+	fetcher           *http.Client
+	events            []Event
+	health            Health
 }
 
 func NewService(store *Store, xray *Xray) (*Service, error) {

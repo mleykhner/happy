@@ -127,6 +127,15 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(png)
 	}))
+	mux.HandleFunc("GET /api/traffic", a.auth(func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.Traffic(r.Context())) }))
+	mux.HandleFunc("POST /api/ping", a.auth(func(w http.ResponseWriter, r *http.Request) {
+		if !s.pingMu.TryLock() {
+			apiError(w, 409, "проверка уже выполняется")
+			return
+		}
+		defer s.pingMu.Unlock()
+		respond(w, 200, s.PingNodes(r.Context()))
+	}))
 	mux.HandleFunc("POST /api/probe", a.auth(func(w http.ResponseWriter, r *http.Request) { respond(w, 200, s.Probe(r.Context())) }))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { apiError(w, 404, "метод API не найден") })
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

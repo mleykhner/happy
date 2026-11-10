@@ -10,6 +10,44 @@ type Node = {
   host: string;
   port: number;
 };
+type Traffic = { available: boolean; upload: number; download: number; uploadRate: number; downloadRate: number };
+type NodePing = { id: string; ok: boolean; latencyMs: number; checked: string };
+function TrafficMonitor() {
+  const [traffic, setTraffic] = useState<Traffic | null>(null);
+  const [history, setHistory] = useState<Traffic[]>([]);
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const sample = await api<Traffic>("/traffic");
+        if (!stopped) {
+          setTraffic(sample);
+          setHistory(h => [...h.slice(-59), sample]);
+        }
+      } catch { if (!stopped) setTraffic(null); }
+      if (!stopped) timer = setTimeout(poll, 1000);
+    }
+    poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, []);
+  const peak = Math.max(1024, ...history.flatMap(t => [t.downloadRate, t.uploadRate]));
+  const points = (key: "downloadRate" | "uploadRate") => history.map((t, i) => `${i * 600 / 59},${100 - (t[key] || 0) / peak * 95}`).join(" ");
+  return <section className="card traffic-monitor">
+    <div className="section-title"><h2>Трафик в реальном времени</h2><span className="muted">WireGuard · обновление 1 с</span></div>
+    {traffic?.available ? <>
+      <div className="traffic-values">
+        <div><span className="muted">↓ Загрузка</span><h3>{bytes(traffic.downloadRate)}/с</h3><span>Всего {bytes(traffic.download)}</span></div>
+        <div><span className="muted">↑ Отправка</span><h3>{bytes(traffic.uploadRate)}/с</h3><span>Всего {bytes(traffic.upload)}</span></div>
+      </div>
+      <svg viewBox="0 0 600 105" role="img" aria-label="История скорости: загрузка зелёным, отправка синим">
+        <polyline className="traffic-download" points={points("downloadRate")} />
+        <polyline className="traffic-upload" points={points("uploadRate")} />
+      </svg>
+      <p className="muted">Счётчики с запуска Xray; сбрасываются при применении конфигурации. Объём полезного трафика клиента, включая заблокированные запросы.</p>
+    </> : <p className="muted">Статистика недоступна. Ожидаем Xray…</p>}
+  </section>;
+}
 type SubscriptionMetadata = {
   title?: string;
   description?: string;
@@ -79,7 +117,7 @@ function bytes(value: number) {
   const units = ["Б", "КиБ", "МиБ", "ГиБ", "ТиБ", "ПиБ"];
   const unit =
     value > 0
-      ? Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
+      ? Math.max(0, Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1))
       : 0;
   return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(value / 1024 ** unit)} ${units[unit]}`;
 }
@@ -192,6 +230,8 @@ function App() {
   const [name, setName] = useState("");
   const [url, setURL] = useState("");
   const [query, setQuery] = useState("");
+  const [pings, setPings] = useState<Record<string, NodePing>>({});
+  const [pinging, setPinging] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [qr, setQR] = useState(false);
   const load = async () => {
@@ -394,6 +434,7 @@ function App() {
         )}
         {tab === "overview" && (
           <>
+            <TrafficMonitor />
             <section className="card connection-card">
               <p className="eyebrow">WIREGUARD → XRAY</p>
               <button
@@ -481,6 +522,12 @@ function App() {
                 <h2>
                   Все серверы <span className="count">{nodes.length}</span>
                 </h2>
+                <Button variant="outline" disabled={pinging || nodes.length === 0} onClick={async () => {
+                  setPinging(true);
+                  try { const results = await api<NodePing[]>("/ping", "POST"); setPings(Object.fromEntries(results.filter(p => p.id).map(p => [p.id, p]))); }
+                  catch (e) { report(e); }
+                  finally { setPinging(false); }
+                }}>{pinging ? "Проверяем…" : "Проверить пинг всех"}</Button>
               </div>
               <input
                 aria-label="Поиск узлов"
@@ -505,6 +552,9 @@ function App() {
                         <p>
                           {n.subscription} · {n.protocol.toUpperCase()} ·{" "}
                           {n.host}:{n.port}
+                        </p>
+                        <p className="muted" title={pings[n.id] ? date(pings[n.id].checked) : "Проверка доступности TCP-порта со шлюза"}>
+                          TCP-пинг: {pinging ? "проверяем…" : !pings[n.id] ? "не проверен" : pings[n.id].ok ? `${pings[n.id].latencyMs} мс` : "недоступен"}
                         </p>
                       </div>
                       <Button

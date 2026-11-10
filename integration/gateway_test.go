@@ -149,6 +149,10 @@ func TestWireGuardThroughProvider(t *testing.T) {
 		}
 	}()
 	assertProviderReachable(t, client)
+	traffic := service.Traffic(t.Context())
+	if !traffic.Available || traffic.Upload == 0 || traffic.Download == 0 {
+		t.Fatalf("WireGuard traffic counters missing after TCP request: %+v", traffic)
+	}
 	// Preserve the client here: recovery must not be hidden by reconnecting.
 	t.Log("checking existing WireGuard session recovery after Xray restart")
 	if err := service.Select(t.Context(), nodeID); err != nil {
