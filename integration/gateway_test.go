@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -62,7 +63,7 @@ func TestWireGuardThroughProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = upstream.Process.Kill(); _ = upstream.Wait() })
-	time.Sleep(400 * time.Millisecond)
+	waitProviderListener(t, tcpPort)
 	link := fmt.Sprintf("vless://123e4567-e89b-12d3-a456-426614174000@127.0.0.1:%d?security=none#Test", tcpPort)
 	var body atomic.Value
 	body.Store(link)
@@ -108,16 +109,12 @@ func TestWireGuardThroughProvider(t *testing.T) {
 	if err = service.Select(t.Context(), nodeID); err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Transport: &http.Transport{DialContext: tnet.DialContext, DisableKeepAlives: true}, Timeout: 8 * time.Second}
-	response, err := client.Get("http://1.1.1.1/test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload, err := io.ReadAll(response.Body)
-	response.Body.Close()
-	if err != nil || string(payload) != "through-provider" {
-		t.Fatalf("unexpected TCP result: %q %v", payload, err)
-	}
+	// Applying subscriptions restarts the Xray WireGuard responder. Keep the
+	// existing client so this checks recovery of a real session after restart.
+	t.Log("waiting for TCP through WireGuard after applying the selected exit")
+	client := &http.Client{Transport: &http.Transport{DialContext: tnet.DialContext, DisableKeepAlives: true}, Timeout: 2 * time.Second}
+	assertProviderReachable(t, client)
+
 	// A DNS-shaped UDP payload proves UDP is carried through WireGuard and VLESS.
 	udp, err := tnet.DialContext(t.Context(), "udp", "1.1.1.1:53")
 	if err != nil {
@@ -148,11 +145,8 @@ func TestWireGuardThroughProvider(t *testing.T) {
 	wg, tnet = connect(t, clientConfig)
 	defer wg.Close()
 	client.Transport = &http.Transport{DialContext: tnet.DialContext, DisableKeepAlives: true}
-	response, err = client.Get("http://1.1.1.1/test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
+	t.Log("waiting for TCP with rotated client keys")
+	assertProviderReachable(t, client)
 	// Disappearing selected node must not leave the previous live route behind.
 	body.Store(strings.Replace(link, "#Test", "#Changed", 1))
 	if err = service.Refresh(t.Context(), id); err != nil {
@@ -160,6 +154,70 @@ func TestWireGuardThroughProvider(t *testing.T) {
 	}
 	assertBlocked(t, tnet, "1.1.1.1:80")
 }
+
+// A responder restart loses ephemeral WireGuard sessions. The client retries
+// its handshake after KeepaliveTimeout + RekeyTimeout (about 15 seconds), so
+// an 8-second HTTP deadline fails before protocol recovery can take place.
+func assertProviderReachable(t *testing.T, client *http.Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if err := waitProviderResponse(ctx, client, "http://1.1.1.1/test"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitProviderResponse(ctx context.Context, client *http.Client, target string) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var last error
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			payload, readErr := io.ReadAll(io.LimitReader(resp.Body, 1024))
+			resp.Body.Close()
+			if readErr != nil {
+				err = readErr
+			} else if resp.StatusCode != http.StatusOK || string(payload) != "through-provider" {
+				return fmt.Errorf("unexpected provider response: HTTP %d, body %q", resp.StatusCode, payload)
+			} else {
+				return nil
+			}
+		}
+		last = err
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("provider did not become reachable after WireGuard recovery: %w", errors.Join(ctx.Err(), last))
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitProviderListener(t *testing.T, port int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
+	for {
+		c, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+		if err == nil {
+			c.Close()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("local VLESS provider did not start: %v", err)
+		case <-ticker.C:
+		}
+	}
+}
+
 func connect(t *testing.T, config string) (*device.Device, *netstack.Net) {
 	t.Helper()
 	get := func(key string) string {
