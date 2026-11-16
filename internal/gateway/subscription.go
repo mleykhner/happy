@@ -18,6 +18,8 @@ import (
 
 const maxSubscription = 4 << 20
 
+var errUnsupportedNodeProtocol = errors.New("поддерживаются VLESS, VMess, Trojan и Shadowsocks")
+
 func decode64(s string) ([]byte, error) {
 	s = strings.Map(func(r rune) rune {
 		if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
@@ -126,22 +128,33 @@ func ParseSubscription(body string) ([]Node, error) {
 	}
 	nodes := []Node{}
 	seen := map[string]bool{}
+	lineNumber, skipped := 0, 0
+	defer func() {
+		if skipped > 0 {
+			log.Printf("subscription.parse unsupported_skipped count=%d", skipped)
+		}
+	}()
 	for line := range strings.SplitSeq(body, "\n") {
+		lineNumber++
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if len(nodes) >= 2000 {
-			return nil, errors.New("слишком много узлов")
-		}
 		n, err := parseNode(line)
+		if errors.Is(err, errUnsupportedNodeProtocol) {
+			skipped++
+			continue
+		}
 		if err != nil {
-			return nil, fmt.Errorf("строка %d: %w", len(nodes)+1, err)
+			return nil, fmt.Errorf("строка %d: %w", lineNumber, err)
 		}
 		if err := providerNotice(n); err != nil {
 			return nil, err
 		}
 		if !seen[n.ID] {
+			if len(nodes) >= 2000 {
+				return nil, errors.New("слишком много узлов")
+			}
 			nodes = append(nodes, n)
 			seen[n.ID] = true
 		}
@@ -180,7 +193,10 @@ func parseNode(raw string) (Node, error) {
 		return Node{}, errors.New("некорректная ссылка узла")
 	}
 	if u.Scheme != "vless" && u.Scheme != "trojan" && u.Scheme != "ss" {
-		return Node{}, errors.New("поддерживаются VLESS, VMess, Trojan и Shadowsocks")
+		if u.Scheme == "" {
+			return Node{}, errors.New("некорректная ссылка узла")
+		}
+		return Node{}, errUnsupportedNodeProtocol
 	}
 	port, err := strconv.Atoi(u.Port())
 	if err != nil || port < 1 || port > 65535 || u.Hostname() == "" {

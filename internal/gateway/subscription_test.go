@@ -90,8 +90,38 @@ func TestSubscriptionFormats(t *testing.T) {
 		})
 	}
 }
+func TestSubscriptionSkipsUnsupportedProtocols(t *testing.T) {
+	body := "hysteria2://SECRET@host:443\n" + sampleVLESS + "\nunknown://SECRET@host:443\n" + sampleVLESS + "\ntrojan://SECRET@host:443#Trojan\ntuic://SECRET@host:443"
+	for name, input := range map[string]string{"plain": body, "base64": base64.StdEncoding.EncodeToString([]byte(body)), "rawurl": base64.RawURLEncoding.EncodeToString([]byte(body))} {
+		t.Run(name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			nodes, err := ParseSubscription(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(nodes) != 2 || nodes[0].Protocol != "vless" || nodes[1].Protocol != "trojan" {
+				t.Fatal("supported nodes lost or duplicates retained")
+			}
+			if !strings.Contains(logs.String(), "unsupported_skipped count=3") || strings.Contains(logs.String(), "SECRET") {
+				t.Fatal("missing safe diagnostic for skipped protocols")
+			}
+		})
+	}
+}
+
+func TestSubscriptionErrorUsesPhysicalLineNumber(t *testing.T) {
+	body := "# comment\n\nhysteria2://SECRET@host:443\n" + sampleVLESS + "\n" + sampleVLESS + "\nvless://SECRET@host:no"
+	_, err := ParseSubscription(body)
+	if err == nil || !strings.HasPrefix(err.Error(), "строка 6:") || strings.Contains(err.Error(), "SECRET") {
+		t.Fatalf("incorrect line diagnostic: %v", err)
+	}
+}
+
 func TestSubscriptionRejectsInvalidWithoutLeakingSecrets(t *testing.T) {
-	for _, s := range []string{"", "<html>Provider error SECRET</html>", "vless://SECRET@host:no", sampleVLESS + "\nhysteria2://SECRET@host:443", "ss://SECRET@host:123?plugin=v2ray-plugin", "vless://SECRET@host:443?type=unsupported"} {
+	for _, s := range []string{"", "<html>Provider error SECRET</html>", "vless://SECRET@host:no", "hysteria2://SECRET@host:443", "ss://SECRET@host:123?plugin=v2ray-plugin", "vless://SECRET@host:443?type=unsupported", sampleVLESS + "\nvless://SECRET@host:no"} {
 		_, err := ParseSubscription(s)
 		if err == nil {
 			t.Fatalf("accepted invalid subscription %q", s)

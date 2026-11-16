@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -227,6 +229,24 @@ func TestAdminAuthenticationCSRFAndSecretExport(t *testing.T) {
 	if !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
 		t.Fatal("weak cookie")
 	}
+	t.Run("subscription add origin rejection is logged", func(t *testing.T) {
+		var logs bytes.Buffer
+		previous := log.Writer()
+		log.SetOutput(&logs)
+		t.Cleanup(func() { log.SetOutput(previous) })
+		w := request("POST", "/api/subscriptions", `{"name":"Provider","url":"https://provider.example/SUBSCRIPTION_SECRET"}`, "http://panel.example", cookie)
+		if w.Code != http.StatusForbidden || len(s.state.Subscriptions) != 0 {
+			t.Fatal("origin mismatch did not block subscription creation")
+		}
+		for _, want := range []string{"subscription.add received", "api.origin rejected status=403", `path="/api/subscriptions"`, `origin="http://panel.example"`, `expected_origin="https://panel.example"`} {
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("missing diagnostic %q", want)
+			}
+		}
+		if strings.Contains(logs.String(), "SUBSCRIPTION_SECRET") {
+			t.Fatal("subscription URL leaked in logs")
+		}
+	})
 	if w = request("GET", "/api/state", "", "", cookie); w.Code != 200 {
 		t.Fatal(w.Code)
 	}

@@ -79,9 +79,16 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 			URL  string `json:"url"`
 		}
 		if !decode(w, r, &v) {
+			log.Printf("subscription.add rejected status=400 reason=invalid_json")
 			return
 		}
-		a.result(w, s.AddSubscription(r.Context(), v.Name, v.URL))
+		err := s.AddSubscription(r.Context(), v.Name, v.URL)
+		if err != nil {
+			log.Printf("subscription.add failed status=400 error_type=%T", err)
+		} else {
+			log.Printf("subscription.add completed status=200")
+		}
+		a.result(w, err)
 	}))
 	mux.HandleFunc("POST /api/subscriptions/{id}/refresh", a.auth(func(w http.ResponseWriter, r *http.Request) { a.result(w, s.Refresh(r.Context(), r.PathValue("id"))) }))
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", a.auth(func(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +227,9 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("Cache-Control", "no-store")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/subscriptions" {
+			log.Printf("subscription.add received")
+		}
 		if r.Method != "GET" && r.Method != "HEAD" {
 			expected := a.origin
 			if expected == "" {
@@ -230,7 +240,7 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 				expected = scheme + "://" + r.Host
 			}
 			if r.Header.Get("Origin") != expected {
-				log.Printf("api.origin rejected status=403 method=%q origin=%q expected_origin=%q host=%q", r.Method, r.Header.Get("Origin"), expected, r.Host)
+				log.Printf("api.origin rejected status=403 method=%q path=%q origin=%q expected_origin=%q host=%q", r.Method, r.URL.Path, r.Header.Get("Origin"), expected, r.Host)
 				apiError(w, 403, "недопустимый Origin")
 				return
 			}
