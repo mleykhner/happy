@@ -51,6 +51,8 @@ docker compose up -d --no-build
 
 Для доступа по HTTPS настройте reverse proxy, затем в `compose.yaml` задайте `HAPPY_ORIGIN=https://vpn.example.org` и `HAPPY_SECURE_COOKIE=true`. Backend не доверяет произвольным `X-Forwarded-*` заголовкам. При проксировании с другого контейнера поместите его в общую Docker-сеть и используйте `http://happy:8080` как upstream.
 
+Для диагностики загрузки подписки откройте `docker compose logs -f --tail=100 happy` и нажмите «Обновить» у подписки. Записи `subscription.fetch` показывают хост провайдера, HTTP-статус, итоговый хост после перенаправления, время запроса, систему и модель клиента, отпечаток HWID и признаки отказа по HWID. URL подписки, сам HWID, ключи узлов и тело ответа не выводятся. `subscription.fetch response` со `status=403` означает отказ при обращении к провайдеру; `api.origin rejected` означает отказ самой панели из-за несовпадения Origin — сравните `origin` и `expected_origin` и проверьте `HAPPY_ORIGIN`.
+
 Пример Caddy на хосте:
 
 ```caddyfile

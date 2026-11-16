@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxSubscription = 4 << 20
@@ -37,7 +39,19 @@ func validateURL(raw string) error {
 	}
 	return nil
 }
-func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string) ([]Node, SubscriptionMetadata, error) {
+func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string) (nodes []Node, metadata SubscriptionMetadata, fetchErr error) {
+	started := time.Now()
+	stage := "validate"
+	// The URL path/query and HWID can contain credentials or identify a device.
+	// Log fingerprints so attempts can be compared without exposing these values.
+	id := identity(raw)
+	defer func() {
+		if fetchErr != nil {
+			log.Printf("subscription.fetch failed subscription=%q stage=%q duration_ms=%d error=%q", id, stage, time.Since(started).Milliseconds(), fetchErr)
+		} else {
+			log.Printf("subscription.fetch completed subscription=%q duration_ms=%d nodes=%d", id, time.Since(started).Milliseconds(), len(nodes))
+		}
+	}()
 	if err := validateURL(raw); err != nil {
 		return nil, SubscriptionMetadata{}, err
 	}
@@ -51,11 +65,29 @@ func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string
 	req.Header.Set("X-Device-Os", runtime.GOOS)
 	req.Header.Set("X-Device-Model", "Happy Gateway ("+runtime.GOARCH+")")
 	req.Header.Set("X-App-Version", "0.1.0")
+	log.Printf("subscription.fetch started subscription=%q host=%q user_agent=%q device_os=%q device_model=%q app_version=%q hwid_present=%t hwid_fingerprint=%q", id, req.URL.Host, req.UserAgent(), req.Header.Get("X-Device-Os"), req.Header.Get("X-Device-Model"), req.Header.Get("X-App-Version"), deviceID != "", identity(deviceID))
+	stage = "request"
 	resp, err := c.Do(req)
 	if err != nil {
+		// http.Client errors include the secret subscription URL. Record only
+		// the underlying error type and timeout/cancellation classification.
+		cause := err
+		var requestErr *url.Error
+		if errors.As(err, &requestErr) {
+			cause = requestErr.Err
+		}
+		log.Printf("subscription.fetch request_error subscription=%q error_type=%T timeout=%t canceled=%t", id, cause, errors.As(err, &requestErr) && requestErr.Timeout(), errors.Is(err, context.Canceled))
 		return nil, SubscriptionMetadata{}, errors.New("не удалось загрузить подписку: проверьте адрес и соединение")
 	}
 	defer resp.Body.Close()
+	finalHost := req.URL.Host
+	redirected := false
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalHost = resp.Request.URL.Host
+		redirected = resp.Request.URL.String() != req.URL.String()
+	}
+	log.Printf("subscription.fetch response subscription=%q host=%q redirected=%t status=%d protocol=%q duration_ms=%d content_type=%q content_length=%d server=%q cf_ray=%q hwid_active=%t hwid_not_supported=%t hwid_max_devices_reached=%t", id, finalHost, redirected, resp.StatusCode, resp.Proto, time.Since(started).Milliseconds(), resp.Header.Get("Content-Type"), resp.ContentLength, resp.Header.Get("Server"), resp.Header.Get("Cf-Ray"), headerEnabled(resp.Header.Get("X-Hwid-Active")), headerEnabled(resp.Header.Get("X-Hwid-Not-Supported")), headerEnabled(resp.Header.Get("X-Hwid-Max-Devices-Reached")))
+	stage = "response"
 	if headerEnabled(resp.Header.Get("X-Hwid-Max-Devices-Reached")) {
 		return nil, SubscriptionMetadata{}, errors.New("достигнут лимит устройств подписки; удалите неиспользуемое устройство в кабинете провайдера")
 	}
@@ -68,6 +100,7 @@ func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string
 	if resp.StatusCode != 200 {
 		return nil, SubscriptionMetadata{}, fmt.Errorf("провайдер ответил HTTP %d", resp.StatusCode)
 	}
+	stage = "read"
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxSubscription+1))
 	if err != nil {
 		return nil, SubscriptionMetadata{}, errors.New("ошибка чтения подписки")
@@ -75,7 +108,8 @@ func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string
 	if len(b) > maxSubscription {
 		return nil, SubscriptionMetadata{}, errors.New("подписка превышает 4 МиБ")
 	}
-	nodes, err := ParseSubscription(string(b))
+	stage = "parse"
+	nodes, err = ParseSubscription(string(b))
 	if err != nil {
 		return nil, SubscriptionMetadata{}, err
 	}

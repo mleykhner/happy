@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -229,6 +230,7 @@ func Handler(s *Service, assets fs.FS, origin string, secure bool) (http.Handler
 				expected = scheme + "://" + r.Host
 			}
 			if r.Header.Get("Origin") != expected {
+				log.Printf("api.origin rejected status=403 method=%q origin=%q expected_origin=%q host=%q", r.Method, r.Header.Get("Origin"), expected, r.Host)
 				apiError(w, 403, "недопустимый Origin")
 				return
 			}

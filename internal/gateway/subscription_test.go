@@ -1,9 +1,14 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
@@ -11,6 +16,64 @@ import (
 )
 
 const sampleVLESS = "vless://123e4567-e89b-12d3-a456-426614174000@vpn.example:443?security=tls&sni=vpn.example#Test"
+
+func TestFetchSubscriptionDiagnostics(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		body     string
+		headers  http.Header
+		redirect bool
+		err      error
+		want     []string
+		wantErr  bool
+	}{
+		{name: "forbidden", status: 403, body: "BODY_SECRET", want: []string{"status=403", `stage="response"`, "subscription.fetch failed"}, wantErr: true},
+		{name: "hwid refusal", status: 403, headers: http.Header{"X-Hwid-Max-Devices-Reached": {"true"}}, want: []string{"status=403", "hwid_max_devices_reached=true", "достигнут лимит устройств"}, wantErr: true},
+		{name: "redirected forbidden", status: 403, redirect: true, want: []string{`host="edge.example"`, "redirected=true", "status=403"}, wantErr: true},
+		{name: "success", status: 200, body: sampleVLESS, want: []string{"subscription.fetch completed", "nodes=1"}},
+		{name: "parse failure", status: 200, body: "<html>BODY_SECRET</html>", want: []string{`stage="parse"`, "subscription.fetch failed"}, wantErr: true},
+		{name: "network failure", err: errors.New("TRANSPORT_SECRET"), want: []string{"subscription.fetch request_error", `stage="request"`}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&output)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if tc.err != nil {
+					return nil, tc.err
+				}
+				if tc.redirect && r.URL.Host == "provider.example" {
+					return &http.Response{StatusCode: 302, Header: http.Header{"Location": {"https://edge.example/REDIRECT_SECRET?token=QUERY_SECRET"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+				}
+				headers := tc.headers.Clone()
+				if headers == nil {
+					headers = make(http.Header)
+				}
+				headers.Set("Set-Cookie", "session=COOKIE_SECRET")
+				headers.Set("Server", "test-provider")
+				return &http.Response{StatusCode: tc.status, Header: headers, Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
+			})}
+			_, _, err := fetchSubscription(t.Context(), client, "https://provider.example/PATH_SECRET?token=QUERY_SECRET", "HWID_SECRET")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("unexpected result: %v", err)
+			}
+			logs := output.String()
+			for _, want := range append([]string{"subscription.fetch started", "duration_ms=", "hwid_present=true"}, tc.want...) {
+				if !strings.Contains(logs, want) {
+					t.Errorf("missing diagnostic %q in %s", want, logs)
+				}
+			}
+			for _, secret := range []string{"PATH_SECRET", "QUERY_SECRET", "HWID_SECRET", "BODY_SECRET", "TRANSPORT_SECRET", "COOKIE_SECRET", "REDIRECT_SECRET", sampleVLESS} {
+				if strings.Contains(logs, secret) {
+					t.Fatal("subscription logs expose sensitive data")
+				}
+			}
+		})
+	}
+}
 
 func TestSubscriptionFormats(t *testing.T) {
 	vmess := `{"v":"2","ps":"VMess","add":"vm.example","port":"443","id":"123e4567-e89b-12d3-a456-426614174000","aid":"0","net":"ws","path":"/socket","host":"vm.example","tls":"tls"}`
