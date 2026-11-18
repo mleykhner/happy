@@ -10,6 +10,28 @@ import (
 	"time"
 )
 
+func TestTransientConnectionFailureDoesNotRestartClients(t *testing.T) {
+	s, _ := fixture(t)
+	s.state = selectedState(t)
+	if err := s.xray.Apply(t.Context(), s.state, true); err != nil {
+		t.Fatal(err)
+	}
+	generation := s.xray.generation
+	calls := 0
+	probe := func(context.Context) (time.Duration, error) {
+		calls++
+		if calls == 1 {
+			return 0, errors.New("temporary health endpoint failure")
+		}
+		return time.Millisecond, nil
+	}
+	s.checkConnection(t.Context(), probe, s.xray.Restart)
+	s.checkConnection(t.Context(), probe, s.xray.Restart)
+	if s.xray.generation != generation {
+		t.Fatal("one transient HTTPS failure restarted Xray and disconnected all clients")
+	}
+}
+
 func TestConnectionRecoveryBoundedPerOutage(t *testing.T) {
 	s := &Service{state: selectedState(t)}
 	probes, restarts := 0, 0
@@ -29,19 +51,28 @@ func TestConnectionRecoveryBoundedPerOutage(t *testing.T) {
 		return errors.New("restart failed")
 	}
 	h := s.checkConnection(t.Context(), probe, restart)
-	if h.OK || h.Status != "offline" || h.Attempts != 3 || restarts != 3 || probes != 4 {
+	if h.Status != "degraded" || restarts != 0 {
+		t.Fatalf("unconfirmed failure restarted clients: %+v", h)
+	}
+	h = s.checkConnection(t.Context(), probe, restart)
+	if h.OK || h.Status != "offline" || h.Attempts != 3 || restarts != 3 || probes != 5 {
 		t.Fatalf("health=%+v restarts=%d probes=%d", h, restarts, probes)
 	}
 	s.checkConnection(t.Context(), probe, restart)
-	if restarts != 3 || probes != 5 {
+	if restarts != 3 || probes != 6 {
 		t.Fatal("exhausted retries restarted again or stopped probing")
 	}
 	online = true
 	h = s.checkConnection(t.Context(), probe, restart)
-	if !h.OK || h.Status != "online" || h.Attempts != 0 || h.Error != "" || h.LatencyMS != 25 {
+	if !h.OK || h.Status != "online" || h.Attempts != 3 || h.Error != "" || h.LatencyMS != 25 {
 		t.Fatalf("did not recover: %+v", h)
 	}
+	h = s.checkConnection(t.Context(), probe, restart)
+	if h.Attempts != 0 {
+		t.Fatal("stable recovery did not reset retry budget")
+	}
 	online = false
+	s.checkConnection(t.Context(), probe, restart)
 	s.checkConnection(t.Context(), probe, restart)
 	if restarts != 6 {
 		t.Fatal("new outage did not reset the retry budget")
@@ -51,14 +82,79 @@ func TestConnectionRecoveryBoundedPerOutage(t *testing.T) {
 func TestConnectionRecoveryVerifiesSuccessfulReconnect(t *testing.T) {
 	s := &Service{state: selectedState(t)}
 	restarts := 0
-	h := s.checkConnection(t.Context(), func(context.Context) (time.Duration, error) {
+	probe := func(context.Context) (time.Duration, error) {
 		if restarts < 2 {
 			return 0, errors.New("offline")
 		}
 		return time.Millisecond, nil
-	}, func(context.Context, State) error { restarts++; return nil })
-	if !h.OK || h.Status != "online" || restarts != 2 || h.Attempts != 0 {
+	}
+	restart := func(context.Context, State) error { restarts++; return nil }
+	s.checkConnection(t.Context(), probe, restart)
+	h := s.checkConnection(t.Context(), probe, restart)
+	if !h.OK || h.Status != "online" || restarts != 2 || h.Attempts != 2 {
 		t.Fatalf("unexpected recovery: %+v, restarts=%d", h, restarts)
+	}
+}
+
+func TestFlappingConnectionDoesNotResetRetryBudget(t *testing.T) {
+	s := &Service{state: selectedState(t)}
+	restarts := 0
+	online := false
+	probe := func(context.Context) (time.Duration, error) {
+		if online {
+			return time.Millisecond, nil
+		}
+		return 0, errors.New("offline")
+	}
+	restart := func(context.Context, State) error { restarts++; return nil }
+	s.checkConnection(t.Context(), probe, restart)
+	s.checkConnection(t.Context(), probe, restart)
+	for range 4 {
+		online = true
+		s.checkConnection(t.Context(), probe, restart)
+		online = false
+		s.checkConnection(t.Context(), probe, restart)
+		s.checkConnection(t.Context(), probe, restart)
+	}
+	if restarts != 3 {
+		t.Fatalf("flapping connection restarted clients %d times; want at most 3", restarts)
+	}
+}
+
+func TestHTTPSProbeFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		primary, secondary int
+		wantOK             bool
+		wantRequests       int
+	}{
+		{"primary works", 204, 500, true, 1},
+		{"primary blocked", 403, 204, true, 2},
+		{"primary redirects", 302, 204, true, 2},
+		{"primary timeout", 0, 204, true, 2},
+		{"both fail", 403, 500, false, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			client := &http.Client{Transport: subscriptionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				requests++
+				status := tc.primary
+				if requests == 2 {
+					status = tc.secondary
+					if r.URL.Host != "cp.cloudflare.com" {
+						t.Errorf("fallback did not use an independent host: %s", r.URL.Host)
+					}
+				}
+				if status == 0 {
+					return nil, context.DeadlineExceeded
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+			})}
+			_, err := probeHTTPS(t.Context(), client)
+			if (err == nil) != tc.wantOK || requests != tc.wantRequests {
+				t.Fatalf("err=%v requests=%d", err, requests)
+			}
+		})
 	}
 }
 

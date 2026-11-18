@@ -258,17 +258,32 @@ func (x *Xray) Probe(ctx context.Context) (time.Duration, error) {
 	tr := &http.Transport{Proxy: http.ProxyURL(proxy), TLSHandshakeTimeout: 8 * time.Second}
 	defer tr.CloseIdleConnections()
 	c := &http.Client{Transport: tr, Timeout: 12 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://www.gstatic.com/generate_204", nil)
-	start := time.Now()
-	resp, err := c.Do(req)
-	if err != nil {
-		return 0, errors.New("выбранный узел не прошёл проверку HTTPS")
+	return probeHTTPS(ctx, c)
+}
+
+// A single blocked health endpoint is not evidence that the exit is down.
+// Both requests use the same authenticated Xray proxy, never a direct fallback.
+func probeHTTPS(ctx context.Context, client *http.Client) (time.Duration, error) {
+	ctx, cancel := context.WithTimeout(ctx, 24*time.Second)
+	defer cancel()
+	for _, endpoint := range []string{"https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"} {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		attemptCtx, stop := context.WithTimeout(ctx, 12*time.Second)
+		req, _ := http.NewRequestWithContext(attemptCtx, "GET", endpoint, nil)
+		start := time.Now()
+		resp, err := client.Do(req)
+		ok := err == nil && resp.StatusCode == http.StatusNoContent
+		if resp != nil {
+			resp.Body.Close()
+		}
+		stop()
+		if ok {
+			return time.Since(start), nil
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 204 {
-		return 0, errors.New("неожиданный ответ проверки HTTPS")
-	}
-	return time.Since(start), nil
+	return 0, errors.New("оба адреса проверки HTTPS недоступны через выбранный узел")
 }
 
 func (x *Xray) setDNSForwardPort(port int) { x.mu.Lock(); defer x.mu.Unlock(); x.dnsForwardPort = port }

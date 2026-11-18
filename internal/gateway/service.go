@@ -21,8 +21,10 @@ type Event struct {
 	Message string    `json:"message"`
 }
 type Health struct {
-	Status    string    `json:"status"`
-	Attempts  int       `json:"attempts"`
+	Status    string `json:"status"`
+	Attempts  int    `json:"attempts"`
+	Failures  int    `json:"failures"`
+	successes int
 	Checked   time.Time `json:"checked"`
 	OK        bool      `json:"ok"`
 	LatencyMS int64     `json:"latencyMs"`

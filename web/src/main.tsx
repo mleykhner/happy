@@ -78,7 +78,7 @@ type Settings = {
   healthIntervalSeconds: number;
 };
 type Health = {
-  status: "idle" | "checking" | "online" | "reconnecting" | "offline";
+  status: "idle" | "checking" | "online" | "degraded" | "reconnecting" | "offline";
   attempts: number;
   checked: string;
   ok: boolean;
@@ -304,6 +304,11 @@ function App() {
   const selectedSubscription = state?.subscriptions.find((sub) =>
     sub.nodes.some((n) => n.id === state.selected),
   );
+  const searchQuery = query.trim().toLowerCase();
+  const serverGroups = state?.subscriptions.map(sub => ({
+    ...sub,
+    visibleNodes: sub.nodes.filter(n => `${n.name} ${sub.name}`.toLowerCase().includes(searchQuery)),
+  })).filter(sub => sub.visibleNodes.length > 0) ?? [];
   const tabs = [
     ["overview", "Обзор"],
     ["subscriptions", "Подписки"],
@@ -535,47 +540,51 @@ function App() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
-              <div className="nodes" role="list" aria-label="Серверы подписок">
-                {nodes
-                  .filter((n) =>
-                    `${n.name} ${n.subscription}`
-                      .toLowerCase()
-                      .includes(query.toLowerCase()),
-                  )
-                  .map((n) => (
-                    <div
-                      role="listitem"
-                      className={`node ${n.id === state.selected ? "selected" : ""}`}
-                      key={`${n.subscription}-${n.id}`}
-                    >
-                      <div>
-                        <h3>{n.name}</h3>
-                        <p>
-                          {n.subscription} · {n.protocol.toUpperCase()} ·{" "}
-                          {n.host}:{n.port}
-                        </p>
-                        <p className={`node-ping ${pings[n.id]?.ok ? "is-online" : ""}`} title={pings[n.id] ? date(pings[n.id].checked) : "Проверка доступности TCP-порта со шлюза"}>
-                          TCP · {pinging ? "проверяем…" : !pings[n.id] ? "не проверен" : pings[n.id].ok ? `${pings[n.id].latencyMs} мс` : "недоступен"}
-                        </p>
-                      </div>
-                      <Button
-                        variant={
-                          n.id === state.selected ? "default" : "outline"
-                        }
-                        disabled={busy || n.id === state.selected}
-                        onClick={() =>
-                          action(
-                            () => api("/select", "POST", { id: n.id }),
-                            "",
-                          )
-                        }
-                      >
-                        {n.id === state.selected ? "Выбран ✓" : "Выбрать"}
-                      </Button>
+              <div className="nodes">
+                {serverGroups.map(sub => (
+                  <section className="server-group" key={sub.id} aria-labelledby={`server-group-${sub.id}`}>
+                    <h3 className="server-group-title" id={`server-group-${sub.id}`}>
+                      <span>{sub.name}</span>
+                      <span className="count">{searchQuery ? `${sub.visibleNodes.length} / ${sub.nodes.length}` : sub.nodes.length}</span>
+                    </h3>
+                    <div role="list" aria-labelledby={`server-group-${sub.id}`}>
+                      {sub.visibleNodes.map((n) => (
+                        <div
+                          role="listitem"
+                          className={`node ${n.id === state.selected ? "selected" : ""}`}
+                          key={n.id}
+                        >
+                          <div>
+                            <h4>{n.name}</h4>
+                            <p>
+                              {n.protocol.toUpperCase()} ·{" "}
+                              {n.host}:{n.port}
+                            </p>
+                            <p className={`node-ping ${pings[n.id]?.ok ? "is-online" : ""}`} title={pings[n.id] ? date(pings[n.id].checked) : "Проверка доступности TCP-порта со шлюза"}>
+                              TCP · {pinging ? "проверяем…" : !pings[n.id] ? "не проверен" : pings[n.id].ok ? `${pings[n.id].latencyMs} мс` : "недоступен"}
+                            </p>
+                          </div>
+                          <Button
+                            variant={
+                              n.id === state.selected ? "default" : "outline"
+                            }
+                            disabled={busy || n.id === state.selected}
+                            onClick={() =>
+                              action(
+                                () => api("/select", "POST", { id: n.id }),
+                                "",
+                              )
+                            }
+                          >
+                            {n.id === state.selected ? "Выбран ✓" : "Выбрать"}
+                          </Button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  </section>
+                ))}
                 {nodes.length === 0 && <div className="empty"><span className="empty-glyph" aria-hidden="true">[ _ ]</span><p>Пока нет серверов.</p><p className="muted">Добавьте и обновите подписку.</p><Button variant="outline" onClick={() => setTab("subscriptions")}>Добавить подписку</Button></div>}
-                {nodes.length > 0 && !nodes.some(n => `${n.name} ${n.subscription}`.toLowerCase().includes(query.toLowerCase())) && <div className="empty"><p>Серверы не найдены.</p><Button variant="outline" onClick={() => setQuery("")}>Сбросить поиск</Button></div>}
+                {nodes.length > 0 && serverGroups.length === 0 && <div className="empty"><p>Серверы не найдены.</p><Button variant="outline" onClick={() => setQuery("")}>Сбросить поиск</Button></div>}
               </div>
             </section>
             </div>
@@ -618,12 +627,16 @@ function App() {
                       ? `Переподключение ${state.health.attempts}/3`
                       : state.health.status === "online"
                         ? `Подключён · ${state.health.latencyMs} мс`
+                        : state.health.status === "degraded"
+                          ? "Сбой проверки"
                         : state.health.status === "offline"
                           ? "Нет интернета"
                           : state.exitDisabled || !selected ? "Отключён" : "Ожидаем проверку"}
                 </h3>
                 <p className="muted">
-                  {state.health.status === "offline" && state.health.attempts >= 3
+                  {state.health.status === "degraded"
+                    ? "Ожидаем повторную проверку. Соединения клиентов сохранены."
+                    : state.health.status === "offline" && state.health.attempts >= 3
                     ? "Три попытки исчерпаны. Продолжаем проверять связь."
                     : state.health.error || (state.health.checked.startsWith("0001")
                       ? `Автопроверка каждые ${state.settings.healthIntervalSeconds} с`

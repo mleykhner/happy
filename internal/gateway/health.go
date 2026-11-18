@@ -7,6 +7,8 @@ import (
 )
 
 const maxReconnectAttempts = 3
+const failuresBeforeReconnect = 2
+const successesBeforeReset = 2
 
 func (s *Service) runHealthChecks(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
@@ -73,18 +75,32 @@ func (s *Service) checkConnection(ctx context.Context, probe func(context.Contex
 		s.health.OK = err == nil
 		s.health.LatencyMS = latency.Milliseconds()
 		if err == nil {
-			if s.health.Attempts > 0 || previous.Status == "offline" {
+			if s.health.Failures > 0 {
 				s.event("Подключение к интернету восстановлено")
 			}
-			s.health.Status, s.health.Error, s.health.Attempts = "online", "", 0
+			s.health.successes = min(s.health.successes+1, successesBeforeReset)
+			if s.health.successes >= successesBeforeReset {
+				s.health.Attempts = 0
+			}
+			s.health.Status, s.health.Error, s.health.Failures = "online", "", 0
 			health := s.health
 			s.mu.Unlock()
 			return health
 		}
-		if s.health.Attempts == 0 && previous.Error == "" {
-			s.event("Нет подключения к интернету через выбранный сервер")
-		}
+		s.health.successes = 0
+		wasConfirmed := s.health.Failures >= failuresBeforeReconnect
+		s.health.Failures = min(s.health.Failures+1, failuresBeforeReconnect)
 		s.health.Error = err.Error()
+		if s.health.Failures < failuresBeforeReconnect {
+			s.health.Status = "degraded"
+			s.event("Проверка HTTPS не прошла; ожидаем подтверждения сбоя")
+			health := s.health
+			s.mu.Unlock()
+			return health
+		}
+		if !wasConfirmed {
+			s.event("Подтверждён сбой интернета через выбранный сервер")
+		}
 		if s.health.Attempts >= maxReconnectAttempts {
 			s.health.Status = "offline"
 			health := s.health
