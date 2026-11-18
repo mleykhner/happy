@@ -309,7 +309,7 @@ func TestAdminAuthenticationCSRFAndSecretExport(t *testing.T) {
 }
 func TestSettingsRejectConfigInjection(t *testing.T) {
 	for _, host := range []string{"vpn.example\n[Peer]", "vpn.example:123", "https://vpn.example", "bad host", "bad;host"} {
-		if err := (Settings{Endpoint: host, WireGuardPort: 51820, RefreshMinutes: 60}).validate(); err == nil {
+		if err := (Settings{Endpoint: host, WireGuardPort: 51820, RefreshMinutes: 60, HealthIntervalSeconds: 30}).validate(); err == nil {
 			t.Fatalf("accepted %q", host)
 		}
 	}

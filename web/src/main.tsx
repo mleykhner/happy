@@ -75,8 +75,11 @@ type Settings = {
   endpoint: string;
   wireguardPort: number;
   refreshMinutes: number;
+  healthIntervalSeconds: number;
 };
 type Health = {
+  status: "idle" | "checking" | "online" | "reconnecting" | "offline";
+  attempts: number;
   checked: string;
   ok: boolean;
   latencyMs: number;
@@ -272,7 +275,7 @@ function App() {
     if (!authed) return;
     const id = setInterval(() => {
       load().catch(report);
-    }, 15000);
+    }, 3000);
     return () => clearInterval(id);
   }, [authed]);
   async function action(
@@ -608,18 +611,23 @@ function App() {
               </article>
               <article className="card">
                 <p className="eyebrow">ПРОВЕРКА ВЫХОДА</p>
-                <h3>
-                  {state.health.checked.startsWith("0001")
-                    ? "Не проверен"
-                    : state.health.ok
-                      ? `${state.health.latencyMs} мс`
-                      : "Недоступен"}
+                <h3 aria-live="polite">
+                  {state.health.status === "checking"
+                    ? "Проверяем…"
+                    : state.health.status === "reconnecting"
+                      ? `Переподключение ${state.health.attempts}/3`
+                      : state.health.status === "online"
+                        ? `Подключён · ${state.health.latencyMs} мс`
+                        : state.health.status === "offline"
+                          ? "Нет интернета"
+                          : state.exitDisabled || !selected ? "Отключён" : "Ожидаем проверку"}
                 </h3>
                 <p className="muted">
-                  {state.health.error ||
-                    (state.health.checked.startsWith("0001")
-                      ? "Запустите проверку соединения"
-                      : date(state.health.checked))}
+                  {state.health.status === "offline" && state.health.attempts >= 3
+                    ? "Три попытки исчерпаны. Продолжаем проверять связь."
+                    : state.health.error || (state.health.checked.startsWith("0001")
+                      ? `Автопроверка каждые ${state.settings.healthIntervalSeconds} с`
+                      : `${date(state.health.checked)} · каждые ${state.settings.healthIntervalSeconds} с`)}
                 </p>
               </article>
             </div>
@@ -852,6 +860,19 @@ function App() {
                       })
                     }
                   />
+                  <small>По умолчанию 1440 минут — один раз в сутки.</small>
+                </label>
+                <label>
+                  Проверка интернета, секунд
+                  <input
+                    type="number"
+                    min={5}
+                    max={3600}
+                    required
+                    value={settings.healthIntervalSeconds}
+                    onChange={e => setSettings({ ...settings, healthIntervalSeconds: Number(e.target.value) })}
+                  />
+                  <small>По умолчанию 30 секунд. При сбое — до трёх переподключений к выбранному серверу.</small>
                 </label>
                 </fieldset>
                 <DNSSettingsForm managedPort={state.managedDnsPort} value={settings.dns} onChange={dns => setSettings({ ...settings, dns })} status={state.dns} check={(upstream, direct) => api<{ latencyMs: number }>("/dns/check", "POST", { upstream, direct })} />

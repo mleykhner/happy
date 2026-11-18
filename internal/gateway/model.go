@@ -42,10 +42,11 @@ type Client struct {
 	Enabled    bool   `json:"enabled"`
 }
 type Settings struct {
-	Endpoint       string      `json:"endpoint"`
-	WireGuardPort  int         `json:"wireguardPort"`
-	RefreshMinutes int         `json:"refreshMinutes"`
-	DNS            DNSSettings `json:"dns"`
+	Endpoint              string      `json:"endpoint"`
+	WireGuardPort         int         `json:"wireguardPort"`
+	RefreshMinutes        int         `json:"refreshMinutes"`
+	HealthIntervalSeconds int         `json:"healthIntervalSeconds"`
+	DNS                   DNSSettings `json:"dns"`
 }
 type State struct {
 	ExitDisabled  bool           `json:"exitDisabled"`
@@ -61,7 +62,7 @@ type State struct {
 
 func initialState() (State, error) {
 	priv, pub, err := keyPair()
-	return State{DeviceID: newDeviceID(), Settings: Settings{WireGuardPort: 51820, RefreshMinutes: 60, DNS: defaultDNSSettings()}, Subscriptions: []Subscription{}, ServerPrivate: priv, ServerPublic: pub}, err
+	return State{DeviceID: newDeviceID(), Settings: Settings{WireGuardPort: 51820, RefreshMinutes: 1440, HealthIntervalSeconds: 30, DNS: defaultDNSSettings()}, Subscriptions: []Subscription{}, ServerPrivate: priv, ServerPublic: pub}, err
 }
 func keyPair() (string, string, error) {
 	k, err := ecdh.X25519().GenerateKey(rand.Reader)
@@ -92,6 +93,9 @@ func (s Settings) validate() error {
 	}
 	if s.RefreshMinutes < 5 || s.RefreshMinutes > 10080 {
 		return errors.New("интервал обновления должен быть от 5 до 10080 минут")
+	}
+	if s.HealthIntervalSeconds < 5 || s.HealthIntervalSeconds > 3600 {
+		return errors.New("интервал проверки интернета должен быть от 5 до 3600 секунд")
 	}
 	if s.Endpoint != "" {
 		if strings.ContainsAny(s.Endpoint, "\r\n\t /#[]=;") || strings.Contains(s.Endpoint, ":") && net.ParseIP(s.Endpoint) == nil {

@@ -123,8 +123,21 @@ func buildConfig(s State, probePort int, probeSecret string, metricsPort int, dn
 	return json.MarshalIndent(config, "", "  ")
 }
 func (x *Xray) Apply(ctx context.Context, s State, forceClosed bool) error {
+	return x.apply(ctx, s, forceClosed, false)
+}
+
+// Restart also replaces a healthy process when the configuration is unchanged,
+// dropping existing outbound connections so the selected server is dialed again.
+func (x *Xray) Restart(ctx context.Context, s State) error {
+	return x.apply(ctx, s, true, true)
+}
+
+func (x *Xray) apply(ctx context.Context, s State, forceClosed, restart bool) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if x.probePort == 0 {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -153,7 +166,7 @@ func (x *Xray) Apply(ctx context.Context, s State, forceClosed bool) error {
 	if err != nil {
 		return err
 	}
-	if x.running() && bytes.Equal(b, x.last) {
+	if !restart && x.running() && bytes.Equal(b, x.last) {
 		return nil
 	}
 	path := filepath.Join(x.dir, "xray.json")
@@ -165,12 +178,18 @@ func (x *Xray) Apply(ctx context.Context, s State, forceClosed bool) error {
 	testCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err = x.validate(testCtx, pending); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if forceClosed {
 			x.stop()
 		}
 		return errors.New("Xray отклонил конфигурацию; проверьте совместимость узла и версию ядра")
 	}
 	previous := x.last
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	x.stop()
 	if err = os.Rename(pending, path); err == nil {
 		err = x.start(path)

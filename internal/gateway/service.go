@@ -21,6 +21,8 @@ type Event struct {
 	Message string    `json:"message"`
 }
 type Health struct {
+	Status    string    `json:"status"`
+	Attempts  int       `json:"attempts"`
 	Checked   time.Time `json:"checked"`
 	OK        bool      `json:"ok"`
 	LatencyMS int64     `json:"latencyMs"`
@@ -31,6 +33,8 @@ type Service struct {
 	refreshMu         sync.Mutex
 	pingMu            sync.Mutex
 	monitorMu         sync.Mutex
+	probeMu           sync.Mutex
+	configRevision    uint64
 	traffic           Traffic
 	trafficGeneration uint64
 	store             *Store
@@ -83,6 +87,13 @@ func NewService(store *Store, xray *Xray) (*Service, error) {
 
 	// Migrate existing installations once, preserving this identity thereafter.
 	changed := migrated
+	if state.Settings.HealthIntervalSeconds == 0 {
+		state.Settings.HealthIntervalSeconds = 30
+		if state.Settings.RefreshMinutes == 60 {
+			state.Settings.RefreshMinutes = 1440
+		}
+		changed = true
+	}
 	if state.Settings.DNS.Listen == "" {
 		state.Settings.DNS = defaultDNSSettings()
 		changed = true
@@ -143,6 +154,10 @@ func cloneState(v State) State {
 	return c
 }
 func (s *Service) commit(ctx context.Context, next State, forceClosed bool) error {
+	// In-flight checks belong to the previous configuration, including failed
+	// changes that stop or roll back the core.
+	s.configRevision++
+	s.health = Health{}
 	old := s.state
 	if err := s.dns.Apply(next.Settings.DNS); err != nil {
 		if !forceClosed {
@@ -211,21 +226,33 @@ func (s *Service) Start(ctx context.Context) {
 		s.event(err.Error())
 	}
 	s.mu.Unlock()
+	go s.runHealthChecks(ctx)
 	go func() {
-		watchdog := time.NewTicker(10 * time.Second)
-		defer watchdog.Stop()
+		s.refreshDue(ctx)
 		refresh := time.NewTicker(time.Minute)
 		defer refresh.Stop()
 		for {
 			select {
 			case <-ctx.Done():
-				s.dns.Close()
 				return
 			case <-refresh.C:
 				s.refreshDue(ctx)
+			}
+		}
+	}()
+	go func() {
+		watchdog := time.NewTicker(10 * time.Second)
+		defer watchdog.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				s.dns.Close()
+				return
 			case <-watchdog.C:
 				s.mu.Lock()
-				if !s.xray.Running() {
+				// Active exits use the bounded recovery in the health worker.
+				if !s.xray.Running() && (s.state.ExitDisabled || s.state.activeNode() == nil) {
+					s.configRevision++
 					s.health = Health{}
 					if err := s.xray.Apply(ctx, s.state, true); err != nil {
 						s.event(err.Error())
@@ -248,6 +275,9 @@ func (s *Service) refreshDue(ctx context.Context) {
 	}
 	s.mu.Unlock()
 	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
+		}
 		_ = s.Refresh(ctx, id)
 	}
 }
@@ -275,7 +305,7 @@ func (s *Service) AddSubscription(ctx context.Context, name, raw string) error {
 		return err
 	}
 	s.state = next
-	s.event("Подписка добавлена; обновите её для загрузки узлов")
+	s.event("Подписка добавлена; узлы загрузятся автоматически или по кнопке обновления")
 	return nil
 }
 func (s *Service) Refresh(ctx context.Context, id string) error {
@@ -373,6 +403,10 @@ func (s *Service) SetConnection(ctx context.Context, enabled bool) error {
 	return s.commit(ctx, next, !enabled)
 }
 func (s *Service) Configure(ctx context.Context, v Settings) error {
+	// Preserve compatibility with API clients predating automatic health checks.
+	if v.HealthIntervalSeconds == 0 {
+		v.HealthIntervalSeconds = 30
+	}
 	if reflect.DeepEqual(v.DNS, DNSSettings{}) {
 		v.DNS = defaultDNSSettings()
 	}
@@ -468,19 +502,16 @@ func (s *Service) changeClient(ctx context.Context, id, action, name string) err
 	return s.commit(ctx, next, force)
 }
 func (s *Service) Probe(ctx context.Context) Health {
-	// Serialize with configuration changes so a probe cannot report a previous exit as healthy.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	d, err := s.xray.Probe(ctx)
-	s.health = Health{Checked: time.Now(), OK: err == nil, LatencyMS: d.Milliseconds()}
-	if err != nil {
-		s.health.Error = err.Error()
-	}
-	return s.health
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	return s.checkConnection(ctx, s.xray.Probe, s.xray.Restart)
 }
 func (s *Service) View() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.health.Status == "" {
+		s.health.Status = "idle"
+	}
 	subs := []any{}
 	for _, sub := range s.state.Subscriptions {
 		nodes := []any{}

@@ -328,6 +328,8 @@ func TestRealXrayDNSUDPAndTCP(t *testing.T) {
 	p := newDNSProxy(x.dnsDial, x.dnsKey)
 	defer p.Close()
 	s := selectedState(t)
+	// The normal WireGuard port may already belong to a running Happy instance.
+	s.Settings.WireGuardPort = freeDNSPort(t)
 	s.Settings.DNS.Enabled = true
 	s.Settings.DNS.Listen = "127.0.0.1"
 	s.Settings.DNS.Port = freeDNSPort(t)
