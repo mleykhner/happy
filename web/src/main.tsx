@@ -12,7 +12,8 @@ type Node = {
   port: number;
 };
 type Traffic = { available: boolean; upload: number; download: number; uploadRate: number; downloadRate: number };
-type NodePing = { id: string; ok: boolean; latencyMs: number; checked: string };
+type NodePing = { id: string; ok: boolean; latencyMs: number; checked: string; error?: string };
+type PingJob = { id: string; status: "idle" | "running" | "completed" | "cancelled"; total: number; completed: number; nodeIds: string[]; results: NodePing[] };
 function TrafficMonitor() {
   const [traffic, setTraffic] = useState<Traffic | null>(null);
   const [history, setHistory] = useState<Traffic[]>([]);
@@ -247,7 +248,11 @@ function App() {
   const [url, setURL] = useState("");
   const [query, setQuery] = useState("");
   const [pings, setPings] = useState<Record<string, NodePing>>({});
-  const [pinging, setPinging] = useState(false);
+  const [pingJob, setPingJob] = useState<PingJob | null>(null);
+  const [pingStarting, setPingStarting] = useState(false);
+  const [pingStreamLost, setPingStreamLost] = useState(false);
+  const pinging = pingJob?.status === "running";
+  const pingNodeIDs = new Set(pingJob?.nodeIds ?? []);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [qr, setQR] = useState("");
   const [clientName, setClientName] = useState("");
@@ -278,6 +283,61 @@ function App() {
     }, 3000);
     return () => clearInterval(id);
   }, [authed]);
+  useEffect(() => {
+    if (!authed) { setPingJob(null); setPings({}); return; }
+    let active = true;
+    api<PingJob>("/ping").then(job => {
+      if (!active) return;
+      setPingJob(job);
+      setPings(Object.fromEntries(job.results.map(p => [p.id, p])));
+    }).catch(e => {
+      if (!active) return;
+      if (!(e instanceof Unauthorized)) setPingJob({ id: "", status: "idle", total: 0, completed: 0, nodeIds: [], results: [] });
+      report(e);
+    });
+    return () => { active = false; };
+  }, [authed]);
+  useEffect(() => {
+    if (!authed || !pinging || !pingJob?.id) return;
+    let active = true;
+    const jobID = pingJob.id;
+    const source = new EventSource(`/api/ping/${encodeURIComponent(jobID)}/events`);
+    source.addEventListener("snapshot", event => {
+      if (!active) return;
+      const job: PingJob = JSON.parse((event as MessageEvent).data);
+      setPingJob(job);
+      setPings(Object.fromEntries(job.results.map(p => [p.id, p])));
+      setPingStreamLost(false);
+      if (job.status !== "running") source.close();
+    });
+    source.addEventListener("result", event => {
+      if (!active) return;
+      const progress: { result: NodePing; completed: number } = JSON.parse((event as MessageEvent).data);
+      setPings(previous => ({ ...previous, [progress.result.id]: progress.result }));
+      setPingJob(previous => previous?.id === jobID ? { ...previous, completed: progress.completed } : previous);
+      setPingStreamLost(false);
+    });
+    source.addEventListener("done", event => {
+      if (!active) return;
+      const done: { status: PingJob["status"]; completed: number } = JSON.parse((event as MessageEvent).data);
+      setPingJob(previous => previous?.id === jobID ? { ...previous, ...done } : previous);
+      setPingStreamLost(false);
+      source.close();
+    });
+    source.onerror = () => {
+      if (!active) return;
+      setPingStreamLost(true);
+      // EventSource reconnects automatically and receives a fresh snapshot.
+      // Also recover if another browser has already started the next job.
+      api<PingJob>("/ping").then(job => {
+        if (!active || job.id === jobID && job.status === "running") return;
+        setPingJob(job);
+        setPings(Object.fromEntries(job.results.map(p => [p.id, p])));
+        setPingStreamLost(false);
+      }).catch(e => { if (active && e instanceof Unauthorized) report(e); });
+    };
+    return () => { active = false; source.close(); };
+  }, [authed, pingJob?.id, pinging]);
   async function action(
     fn: () => Promise<unknown>,
     message = "Изменения сохранены",
@@ -526,13 +586,19 @@ function App() {
                 <h2>
                   Серверы выхода <span className="count">{nodes.length}</span>
                 </h2>
-                <Button variant="outline" loading={pinging} disabled={nodes.length === 0} onClick={async () => {
-                  setPinging(true);
-                  try { const results = await api<NodePing[]>("/ping", "POST"); setPings(Object.fromEntries(results.filter(p => p.id).map(p => [p.id, p]))); }
+                <Button variant="outline" loading={pinging || pingStarting} disabled={nodes.length === 0 || pingJob === null} onClick={async () => {
+                  setPingStarting(true);
+                  try {
+                    const job = await api<PingJob>("/ping/jobs", "POST");
+                    setPingJob(job);
+                    setPings(Object.fromEntries(job.results.map(p => [p.id, p])));
+                    setPingStreamLost(false);
+                  }
                   catch (e) { report(e); }
-                  finally { setPinging(false); }
-                }}>{pinging ? "Проверяем…" : "Пинг всех"}</Button>
+                  finally { setPingStarting(false); }
+                }}>{pinging ? `${pingJob.completed} / ${pingJob.total}` : pingStarting ? "Запускаем…" : "Пинг всех"}</Button>
               </div>
+              <p className="muted" role="status">{pingStreamLost ? "Восстанавливаем поток результатов…" : pinging ? `Проверено ${pingJob.completed} из ${pingJob.total}. Результаты появляются сразу.` : pingJob?.status === "completed" ? `Проверено ${pingJob.completed} из ${pingJob.total}.` : "TCP с хоста · до двух одновременных проверок."}</p>
               <input
                 aria-label="Поиск узлов"
                 type="search"
@@ -560,8 +626,8 @@ function App() {
                               {n.protocol.toUpperCase()} ·{" "}
                               {n.host}:{n.port}
                             </p>
-                            <p className={`node-ping ${pings[n.id]?.ok ? "is-online" : ""}`} title={pings[n.id] ? date(pings[n.id].checked) : "Проверка доступности TCP-порта со шлюза"}>
-                              TCP · {pinging ? "проверяем…" : !pings[n.id] ? "не проверен" : pings[n.id].ok ? `${pings[n.id].latencyMs} мс` : "недоступен"}
+                            <p className={`node-ping ${pings[n.id]?.ok ? "is-online" : ""}`} title={pings[n.id] ? `${pings[n.id].error || "Прямое TCP-подключение с хоста, без времени DNS"} · ${date(pings[n.id].checked)}` : "Прямое TCP-подключение с хоста; выбранный выход Happy не используется"}>
+                              TCP с хоста · {pings[n.id] ? pings[n.id].ok ? `${pings[n.id].latencyMs} мс` : "недоступен" : pinging && pingNodeIDs.has(n.id) ? "в очереди" : "не проверен"}
                             </p>
                           </div>
                           <Button

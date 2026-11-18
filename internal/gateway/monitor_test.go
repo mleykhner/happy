@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -44,32 +43,6 @@ func TestTrafficCountersAndRestart(t *testing.T) {
 	close(x.done)
 	if s.Traffic(t.Context()).Available {
 		t.Fatal("stopped core reported available")
-	}
-}
-
-func TestPingNodes(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	go func() {
-		conn, err := l.Accept()
-		if err == nil {
-			conn.Close()
-		}
-	}()
-	s := &Service{state: State{Subscriptions: []Subscription{{Nodes: []Node{{ID: "reachable", Host: "127.0.0.1", Port: l.Addr().(*net.TCPAddr).Port}}}}}}
-	results := s.PingNodes(t.Context())
-	if len(results) != 1 || !results[0].OK || results[0].ID != "reachable" {
-		t.Fatalf("unexpected ping: %+v", results)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	for _, result := range s.PingNodes(ctx) {
-		if result.OK {
-			t.Fatal("cancelled probe succeeded")
-		}
 	}
 }
 

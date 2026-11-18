@@ -5,10 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"strconv"
-	"sync"
 	"time"
 )
 
@@ -72,57 +69,4 @@ func (s *Service) Traffic(ctx context.Context) Traffic {
 	}
 	s.traffic, s.trafficGeneration = next, generation
 	return next
-}
-
-type NodePing struct {
-	ID        string    `json:"id"`
-	Checked   time.Time `json:"checked"`
-	OK        bool      `json:"ok"`
-	LatencyMS int64     `json:"latencyMs"`
-}
-
-// PingNodes measures TCP connection establishment from the gateway, independently
-// of the selected outbound. At most eight probes run concurrently.
-func (s *Service) PingNodes(ctx context.Context) []NodePing {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-	s.mu.Lock()
-	var nodes []Node
-	for _, sub := range s.state.Subscriptions {
-		nodes = append(nodes, sub.Nodes...)
-	}
-	s.mu.Unlock()
-	results := make([]NodePing, len(nodes))
-	var wg sync.WaitGroup
-	jobs := make(chan int)
-	for range min(8, len(nodes)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				n := nodes[i]
-				start := time.Now()
-				dialer := net.Dialer{Timeout: 3 * time.Second}
-				conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(n.Host, strconv.Itoa(n.Port)))
-				result := NodePing{ID: n.ID, Checked: time.Now(), OK: err == nil}
-				if err == nil {
-					result.LatencyMS = max(1, time.Since(start).Milliseconds())
-					conn.Close()
-				}
-				results[i] = result
-			}
-		}()
-	}
-	for i := range nodes {
-		select {
-		case jobs <- i:
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			return results
-		}
-	}
-	close(jobs)
-	wg.Wait()
-	return results
 }

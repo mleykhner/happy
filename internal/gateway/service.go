@@ -34,6 +34,8 @@ type Service struct {
 	mu                sync.Mutex
 	refreshMu         sync.Mutex
 	pingMu            sync.Mutex
+	pingJob           *pingJob
+	pingClosed        bool
 	monitorMu         sync.Mutex
 	probeMu           sync.Mutex
 	configRevision    uint64
@@ -219,6 +221,7 @@ func (s *Service) commit(ctx context.Context, next State, forceClosed bool) erro
 	return nil
 }
 func (s *Service) Start(ctx context.Context) {
+	context.AfterFunc(ctx, s.stopPings)
 	s.mu.Lock()
 	if err := s.dns.Apply(s.state.Settings.DNS); err != nil {
 		s.event(err.Error())
@@ -536,4 +539,7 @@ func (s *Service) ClientConfig(ids ...string) (string, error) {
 	return s.state.clientConfig(ids...)
 }
 
-func (s *Service) Close() { s.dns.Close() }
+func (s *Service) Close() {
+	s.stopPings()
+	s.dns.Close()
+}
