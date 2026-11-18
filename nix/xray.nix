@@ -18,6 +18,8 @@ in stdenvNoCC.mkDerivation {
     mkdir -p $out/bin $out/share/licenses/xray
     unzip -p $src xray > $out/bin/xray
     chmod +x $out/bin/xray
+    unzip -p $src geoip.dat > $out/bin/geoip.dat
+    unzip -p $src geosite.dat > $out/bin/geosite.dat
     unzip -p $src LICENSE > $out/share/licenses/xray/LICENSE
   '';
   meta = { platforms = builtins.attrNames releases; license = lib.licenses.mpl20; };

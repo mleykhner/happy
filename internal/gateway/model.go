@@ -15,12 +15,13 @@ import (
 )
 
 type Node struct {
-	ID       string         `json:"id"`
-	Name     string         `json:"name"`
-	Protocol string         `json:"protocol"`
-	Host     string         `json:"host"`
-	Port     int            `json:"port"`
-	Outbound map[string]any `json:"outbound"`
+	ID         string                  `json:"id"`
+	Name       string                  `json:"name"`
+	Protocol   string                  `json:"protocol"`
+	Host       string                  `json:"host"`
+	Port       int                     `json:"port"`
+	Outbound   map[string]any          `json:"outbound"`
+	FullConfig *SubscriptionXrayConfig `json:"fullConfig,omitempty"`
 }
 type Subscription struct {
 	Metadata  SubscriptionMetadata `json:"metadata"`

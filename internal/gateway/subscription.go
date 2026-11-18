@@ -119,12 +119,24 @@ func fetchSubscription(ctx context.Context, c *http.Client, raw, deviceID string
 }
 func ParseSubscription(body string) ([]Node, error) {
 	body = strings.TrimSpace(strings.TrimPrefix(body, "\ufeff"))
-	if !strings.Contains(body, "://") {
+	if len(body) > maxSubscription {
+		return nil, errors.New("подписка превышает 4 МиБ")
+	}
+	if wireguardDocument(body) {
+		return nil, errors.New("WireGuard/AmneziaWG в подписке пока не поддерживается")
+	}
+	if !strings.Contains(body, "://") && !strings.HasPrefix(body, "{") && !strings.HasPrefix(body, "[") {
 		b, err := decode64(body)
 		if err != nil {
 			return nil, errors.New("ожидается список ссылок или Base64-подписка")
 		}
-		body = string(b)
+		body = strings.TrimSpace(strings.TrimPrefix(string(b), "\ufeff"))
+	}
+	if wireguardDocument(body) {
+		return nil, errors.New("WireGuard/AmneziaWG в подписке пока не поддерживается")
+	}
+	if strings.HasPrefix(body, "{") || strings.HasPrefix(body, "[") {
+		return parseJSONSubscription(body)
 	}
 	nodes := []Node{}
 	seen := map[string]bool{}
@@ -138,6 +150,9 @@ func ParseSubscription(body string) ([]Node, error) {
 		lineNumber++
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if subscriptionRoutingDirective(line) {
 			continue
 		}
 		n, err := parseNode(line)

@@ -59,7 +59,9 @@ func buildConfig(s State, probePort int, probeSecret string, metricsPort int, dn
 	outbounds := []any{block}
 	target := "block"
 	if n := s.activeNode(); n != nil && !s.ExitDisabled {
-		outbounds = append(outbounds, n.Outbound)
+		if n.FullConfig == nil {
+			outbounds = append(outbounds, n.Outbound)
+		}
 		target = "proxy"
 	}
 	inbounds := []any{map[string]any{"tag": "health", "listen": "127.0.0.1", "port": probePort, "protocol": "http", "settings": map[string]any{"accounts": []any{map[string]any{"user": "happy", "pass": probeSecret}}}}}
@@ -98,10 +100,25 @@ func buildConfig(s State, probePort int, probeSecret string, metricsPort int, dn
 		rules = append([]any{map[string]any{"type": "field", "inboundTag": []string{"wireguard"}, "ip": []string{wireGuardDNS + "/32"}, "port": "53", "network": "tcp,udp", "outboundTag": "dns-local"}}, rules...)
 	}
 	config := map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": inbounds, "outbounds": outbounds, "routing": map[string]any{"domainStrategy": "AsIs", "rules": rules}}
+	if n := s.activeNode(); n != nil && !s.ExitDisabled && n.FullConfig != nil {
+		if err := mergeSubscriptionXray(config, n.FullConfig); err != nil {
+			return nil, err
+		}
+	}
 	if metricsPort > 0 {
 		config["metrics"] = map[string]any{"listen": fmt.Sprintf("127.0.0.1:%d", metricsPort)}
 		config["stats"] = map[string]any{}
-		config["policy"] = map[string]any{"system": map[string]any{"statsInboundUplink": true, "statsInboundDownlink": true}}
+		policy, ok := config["policy"].(map[string]any)
+		if !ok {
+			policy = map[string]any{}
+			config["policy"] = policy
+		}
+		system, ok := policy["system"].(map[string]any)
+		if !ok {
+			system = map[string]any{}
+			policy["system"] = system
+		}
+		system["statsInboundUplink"], system["statsInboundDownlink"] = true, true
 	}
 	return json.MarshalIndent(config, "", "  ")
 }

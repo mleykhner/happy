@@ -30,6 +30,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home happy && mkdir /data && chown happy:happy /data
 COPY --from=build /happy /usr/local/bin/happy
 COPY --from=xray /out/xray /usr/local/bin/xray
+COPY --from=xray /out/geoip.dat /out/geosite.dat /usr/local/bin/
 COPY --from=xray /out/XRAY-LICENSE /usr/share/doc/happy/XRAY-LICENSE
 USER 10001:10001
 ENV HAPPY_DATA_DIR=/data HAPPY_LISTEN=0.0.0.0:8080
